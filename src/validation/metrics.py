@@ -224,7 +224,7 @@ def analyze_holding_period(
         for day in signal_dates:
             try:
                 # 現在の価格
-                current_price = prices.loc[day, 'Adj Close']
+                current_price = prices.loc[day, 'Close']
                 
                 # 保有期間後の価格
                 future_idx = prices.index.get_loc(day) + holding_days
@@ -232,7 +232,7 @@ def analyze_holding_period(
                     continue
                     
                 future_date = prices.index[future_idx]
-                future_price = prices.loc[future_date, 'Adj Close']
+                future_price = prices.loc[future_date, 'Close']
                 
                 # リターンの計算
                 if signal_type == 'Buy_Signal':
