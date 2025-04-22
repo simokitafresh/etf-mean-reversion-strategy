@@ -13,7 +13,6 @@ def get_sample_etfs():
         {"symbol": "VNQ", "name": "Vanguard Real Estate Index Fund", "category": "Real Estate"}
     ]
 
-# src/universe/sample_etfs.py の変更部分
 def override_universe_selection(module_path):
     """ETFユニバース選定関数をオーバーライドして高速サンプルモードにする
     
@@ -34,8 +33,8 @@ def override_universe_selection(module_path):
         print("🔍 サンプルETFモードを使用します（処理時間短縮のため）")
         sample_etfs = get_sample_etfs()
         
-        # clustering_methodパラメータを取得（デフォルトは'stable'）
-        clustering_method = kwargs.get('clustering_method', 'stable')
+        # clustering_methodパラメータを取得（デフォルトは'optics'）
+        clustering_method = kwargs.get('clustering_method', 'optics')
         
         print(f"📊 選択された{len(sample_etfs)}銘柄のETF (方式: {clustering_method}):")
         for etf in sample_etfs:
