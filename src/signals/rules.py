@@ -77,11 +77,20 @@ def generate_signals(
     result['Buy_Overshoot'] = buy_overshoot
     result['Sell_Overshoot'] = sell_overshoot
     
-    # シグナル生成
-    # 買いシグナル: 上昇トレンド + 買いオーバーシュート
-    # 売りシグナル: 下降トレンド + 売りオーバーシュート
-    result['Buy_Signal'] = (result['Trend'] == 1) & result['Buy_Overshoot']
-    result['Sell_Signal'] = (result['Trend'] == -1) & result['Sell_Overshoot']
+    # シグナル生成 - 修正：NaN値の処理と条件強化
+    # NaN値を明示的に処理
+    trend_is_up = result['Trend'].fillna(0) == 1
+    trend_is_down = result['Trend'].fillna(0) == -1
+    buy_overshoot_valid = result['Buy_Overshoot'].fillna(False)
+    sell_overshoot_valid = result['Sell_Overshoot'].fillna(False)
+    
+    # 連続シグナルのフィルタリング（前日もシグナルだった場合は除外）
+    buy_overshoot_not_repeated = ~buy_overshoot_valid.shift(1).fillna(False)
+    sell_overshoot_not_repeated = ~sell_overshoot_valid.shift(1).fillna(False)
+    
+    # 最終的なシグナル生成（修正された条件）
+    result['Buy_Signal'] = trend_is_up & buy_overshoot_valid & buy_overshoot_not_repeated
+    result['Sell_Signal'] = trend_is_down & sell_overshoot_valid & sell_overshoot_not_repeated
     
     # オリジナルのシグナル数を保存
     buy_signal_count = result['Buy_Signal'].sum()
