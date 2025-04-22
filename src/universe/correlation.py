@@ -8,13 +8,13 @@ import os
 import warnings
 import logging
 from typing import List, Dict, Any, Optional, Union, Tuple
-from ..data.cache import DataCache
 
 # ロガーの設定
 logger = logging.getLogger(__name__)
 
-# キャッシュのインスタンス化
+# キャッシュのインスタンス化 - エラー処理強化
 try:
+    from ..data.cache import DataCache
     cache = DataCache()
     cache_available = True
 except Exception as e:
@@ -72,13 +72,16 @@ def correlation_filtering(
         logger.warning(f"無効な相関閾値 ({correlation_threshold})。0.8に調整します。")
         correlation_threshold = 0.8
     
-    # キャッシュから取得を試みる
-    cache_key = f"correlation_filtered_etfs_{len(liquid_etfs)}_{correlation_threshold}"
+    # キャッシュから取得を試みる - エラー処理強化
     if cache_available:
-        cached_data = cache.get_json(cache_key)
-        if cached_data:
-            logger.info("キャッシュから相関フィルタリング結果を取得しました")
-            return cached_data
+        cache_key = f"correlation_filtered_etfs_{len(liquid_etfs)}_{correlation_threshold}"
+        try:
+            cached_data = cache.get_json(cache_key)
+            if cached_data:
+                logger.info("キャッシュから相関フィルタリング結果を取得しました")
+                return cached_data
+        except Exception as e:
+            logger.warning(f"キャッシュ読み込みエラー: {str(e)}")
     
     # 再帰深度チェック（無限ループ防止）
     if max_attempts <= 0:
@@ -308,7 +311,7 @@ def correlation_filtering(
             new_threshold = min(0.99, correlation_threshold + 0.05)  # 上限値を0.99に制限
             return correlation_filtering(liquid_etfs, target_count, new_threshold, max_attempts - 1)
         
-        # 結果をキャッシュに保存
+        # キャッシュに保存 - エラー処理強化
         if cache_available:
             try:
                 cache.set_json(cache_key, filtered_etfs)
@@ -385,3 +388,4 @@ def calculate_robust_correlation(returns_df, method='pearson'):
     except Exception as e:
         logger.error(f"堅牢な相関計算エラー: {str(e)}")
         return None
+        
