@@ -6,30 +6,109 @@ from sklearn.cluster import OPTICS
 import matplotlib.pyplot as plt
 import os
 import warnings
-from typing import List, Dict, Any, Tuple
+import logging
+from typing import List, Dict, Any, Tuple, Optional, Union
 
 # 同一パッケージ内の基底クラスを相対インポートで参照
 from .base_clusterer import BaseClusterer
 
+# ロガー設定
+logger = logging.getLogger(__name__)
+
 # 再現性のためのランダムシード
 RANDOM_SEED = 42
 
-# Scikit-TDAパッケージチェック
-try:
-    from sklearn_tda import Mapper
-    from sklearn_tda.preprocessing import Scaler
-    from sklearn_tda.plot import plot_diagram
-    SKLEARN_TDA_AVAILABLE = True
-except ImportError:
+# TDAライブラリの情報を格納するための変数
+tda_package_info = {
+    'available': False,     # TDAライブラリが利用可能かどうか
+    'package_name': None,   # 使用しているパッケージ名
+    'version': None,        # パッケージのバージョン
+    'mapper_class': None,   # 使用するMapperクラス
+    'import_error': None    # インポートエラーがあれば保存
+}
+
+def setup_tda_environment():
+    """TDAライブラリをインポートし、環境をセットアップする
+    
+    この関数は、利用可能なTDAライブラリをインポートし、必要なクラスや関数を設定します。
+    優先順位は sklearn_tda > gtda > なし です。
+    
+    Returns:
+        bool: TDAライブラリが正常にセットアップされたかどうか
+    """
+    global tda_package_info
+    
+    # 1. sklearn_tda をインポート試行（最優先）
     try:
-        # 代替インポート（scikit-tdaの最新バージョン）
+        from sklearn_tda import Mapper
+        from sklearn_tda.preprocessing import Scaler
+        from sklearn_tda.plot import plot_diagram
+        
+        # バージョン情報の取得
+        try:
+            import sklearn_tda
+            version = getattr(sklearn_tda, '__version__', 'unknown')
+        except:
+            version = 'unknown'
+        
+        # パッケージ情報を設定
+        tda_package_info.update({
+            'available': True,
+            'package_name': 'sklearn_tda',
+            'version': version,
+            'mapper_class': Mapper
+        })
+        
+        logger.info(f"sklearn_tda (バージョン: {version}) を使用します。")
+        return True
+    except ImportError as e:
+        # エラー情報を保存
+        tda_package_info['import_error'] = str(e)
+        logger.debug(f"sklearn_tda のインポートに失敗しました: {str(e)}")
+    
+    # 2. gtda をインポート試行（次の優先順位）
+    try:
         from gtda.mapper import Mapper
-        from gtda.mapper import plot_static_mapper_graph
-        SKLEARN_TDA_AVAILABLE = True
-    except ImportError:
-        # fallback
-        SKLEARN_TDA_AVAILABLE = False
-        warnings.warn("Scikit-TDAがインストールされていません。従来のクラスタリング方法を使用します。")
+        from gtda.mapper import CubicalCover, make_mapper_pipeline
+        
+        # バージョン情報の取得
+        try:
+            import gtda
+            version = getattr(gtda, '__version__', 'unknown')
+        except:
+            version = 'unknown'
+        
+        # パッケージ情報を設定
+        tda_package_info.update({
+            'available': True,
+            'package_name': 'gtda',
+            'version': version,
+            'mapper_class': Mapper
+        })
+        
+        logger.info(f"gtda (バージョン: {version}) を使用します。")
+        return True
+    except ImportError as e:
+        # すでに保存されているエラーに追加
+        prev_error = tda_package_info.get('import_error', '')
+        tda_package_info['import_error'] = f"{prev_error}; gtda: {str(e)}"
+        logger.debug(f"gtda のインポートに失敗しました: {str(e)}")
+    
+    # どちらのライブラリもインポートできなかった場合
+    tda_package_info.update({
+        'available': False,
+        'package_name': None,
+        'version': None,
+        'mapper_class': None
+    })
+    
+    warning_msg = "TDAライブラリ (sklearn_tda または gtda) がインストールされていません。"
+    warnings.warn(warning_msg)
+    logger.warning(f"{warning_msg} フォールバックのクラスタリング方法を使用します。")
+    return False
+
+# 起動時にTDA環境をセットアップ
+TDA_AVAILABLE = setup_tda_environment()
 
 class TDAOPTICSClusterer(BaseClusterer):
     """TDAとOPTICSを組み合わせたクラスタリング"""
@@ -37,6 +116,16 @@ class TDAOPTICSClusterer(BaseClusterer):
     def __init__(self, **kwargs):
         """初期化"""
         super().__init__(name="tda_optics", **kwargs)
+        
+        # TDA使用可能かチェックし、警告を表示
+        if not TDA_AVAILABLE:
+            warnings.warn(
+                f"TDAライブラリがインストールされていないため、OPTICSのみが使用されます。"
+                f"エラー: {tda_package_info.get('import_error')}"
+            )
+        else:
+            logger.info(f"TDA+OPTICSクラスタリングを使用します。TDAパッケージ: {tda_package_info['package_name']} "
+                      f"(バージョン: {tda_package_info['version']})")
         
         # TDA用パラメータ
         self.tda_params = {
@@ -63,8 +152,8 @@ class TDAOPTICSClusterer(BaseClusterer):
         Returns:
             List[Dict[str, Any]]: 選択されたETFのリスト
         """
-        if not SKLEARN_TDA_AVAILABLE:
-            warnings.warn("Scikit-TDAが利用できないため、OPTICSのみを使用します")
+        if not TDA_AVAILABLE:
+            logger.warning("TDAライブラリが利用できないため、OPTICSのみを使用します")
             # OPTICSのみを使用するフォールバック
             return self._fallback_clustering(etfs, returns_df)
         
@@ -183,104 +272,163 @@ class TDAOPTICSClusterer(BaseClusterer):
         scaled_returns = scaler.fit_transform(returns_data)
         
         try:
-            # scikit-tda方式でのマッパー作成
-            if 'sklearn_tda' in globals():
-                # Mapperオブジェクトの作成
-                mapper = Mapper(
-                    verbose=0,
-                    coverer="uniform", 
-                    n_cubes=self.tda_params["resolution"],
-                    overlap=self.tda_params["overlap"]
-                )
-                
-                # フィルター（レンズ）関数の適用
-                # KNN距離と同等の機能を使用
-                if self.tda_params["lens_type"] == "knn_distance_10":
-                    from sklearn.neighbors import NearestNeighbors
-                    nn = NearestNeighbors(n_neighbors=10)
-                    nn.fit(scaled_returns)
-                    lens = nn.kneighbors(scaled_returns, return_distance=True)[0].mean(axis=1).reshape(-1, 1)
-                else:
-                    # デフォルトはデータそのものを使用
-                    lens = scaled_returns
-                
-                # Mapperグラフを構築
-                graph = mapper.fit_transform(
-                    lens,
-                    scaled_returns,
-                    clusterer=OPTICS(**self.optics_params)
-                )
+            # TDAライブラリに基づいたマッパー処理を実行
+            if tda_package_info['package_name'] == 'sklearn_tda':
+                return self._perform_sklearn_tda_mapping(scaled_returns, valid_symbols)
+            elif tda_package_info['package_name'] == 'gtda':
+                return self._perform_gtda_mapping(scaled_returns, valid_symbols)
             else:
-                # gtda方式でのマッパー作成
-                from gtda.mapper import CubicalCover, make_mapper_pipeline
-                from gtda.mapper import Projection, Eccentricity
+                raise ImportError("利用可能なTDAライブラリがありません")
                 
-                # カバーとクラスタリングの設定
-                cover = CubicalCover(
-                    n_intervals=self.tda_params["resolution"],
-                    overlap_frac=self.tda_params["overlap"]
-                )
-                
-                # レンズ関数の設定
-                if self.tda_params["lens_type"] == "knn_distance_10":
-                    lens = Eccentricity(n_neighbors=10)
-                else:
-                    lens = Projection(columns=[0, 1])
-                
-                # マッパーパイプラインの構築
-                mapper = make_mapper_pipeline(
-                    lens=lens,
-                    cover=cover,
-                    clusterer=OPTICS(**self.optics_params),
-                    verbose=True
-                )
-                
-                # マッパーグラフの構築
-                graph = mapper.fit_transform(scaled_returns)
-            
-            print(f"Mapperグラフを構築しました: {len(graph['nodes'])}ノード, {len(graph['links'])}リンク")
         except Exception as e:
             print(f"TDAマッパー構築エラー: {str(e)}。代替アプローチを使用します。")
-            # 代替アプローチ：scikit-learn のみで簡易TDAを実装
-            from sklearn.neighbors import kneighbors_graph
-            import networkx as nx
-            
-            # k-近傍グラフを構築
-            k = min(10, len(scaled_returns) - 1)  # データポイント数以下のkを選択
-            connectivity = kneighbors_graph(scaled_returns, n_neighbors=k, mode='distance')
-            
-            # NetworkXグラフに変換
-            G = nx.from_scipy_sparse_matrix(connectivity)
-            
-            # ノードをクラスタリング
-            optics = OPTICS(**self.optics_params)
-            labels = optics.fit_predict(scaled_returns)
-            
-            # グラフ構造を作成
-            graph = {
-                'nodes': {},
-                'links': []
-            }
-            
-            # ノード情報を追加
-            for i, label in enumerate(labels):
-                cluster_id = int(label) if label != -1 else -1
-                if cluster_id not in graph['nodes']:
-                    graph['nodes'][cluster_id] = []
-                graph['nodes'][cluster_id].append(i)
-            
-            # エッジ情報を追加
-            for edge in G.edges():
-                source, target = edge
-                source_cluster = int(labels[source]) if labels[source] != -1 else -1
-                target_cluster = int(labels[target]) if labels[target] != -1 else -1
-                
-                if source_cluster != -1 and target_cluster != -1 and source_cluster != target_cluster:
-                    graph['links'].append((source_cluster, target_cluster))
-            
-            print(f"代替マッパーグラフを構築しました: {len(graph['nodes'])}ノード, {len(graph['links'])}リンク")
+            return self._perform_alternative_mapping(scaled_returns, valid_symbols)
+    
+    def _perform_sklearn_tda_mapping(self, scaled_returns: np.ndarray, valid_symbols: List[str]) -> Tuple[List[List[str]], Dict]:
+        """sklearn_tdaを使用したマッピング処理
         
-        # クラスタの抽出（接続成分をクラスタとして使用）
+        Args:
+            scaled_returns: スケーリングされたリターンデータ
+            valid_symbols: 有効なETFシンボルのリスト
+            
+        Returns:
+            Tuple[List[List[str]], Dict]: クラスタのリストとMapperグラフ
+        """
+        from sklearn_tda import Mapper
+        
+        # Mapperオブジェクトの作成
+        mapper = Mapper(
+            verbose=0,
+            coverer="uniform", 
+            n_cubes=self.tda_params["resolution"],
+            overlap=self.tda_params["overlap"]
+        )
+        
+        # フィルター（レンズ）関数の適用
+        # KNN距離と同等の機能を使用
+        if self.tda_params["lens_type"] == "knn_distance_10":
+            from sklearn.neighbors import NearestNeighbors
+            nn = NearestNeighbors(n_neighbors=10)
+            nn.fit(scaled_returns)
+            lens = nn.kneighbors(scaled_returns, return_distance=True)[0].mean(axis=1).reshape(-1, 1)
+        else:
+            # デフォルトはデータそのものを使用
+            lens = scaled_returns
+        
+        # Mapperグラフを構築
+        graph = mapper.fit_transform(
+            lens,
+            scaled_returns,
+            clusterer=OPTICS(**self.optics_params)
+        )
+        
+        print(f"Mapperグラフを構築しました: {len(graph['nodes'])}ノード, {len(graph['links'])}リンク")
+        
+        # グラフからクラスタを抽出
+        return self._extract_clusters_from_graph(graph, valid_symbols)
+    
+    def _perform_gtda_mapping(self, scaled_returns: np.ndarray, valid_symbols: List[str]) -> Tuple[List[List[str]], Dict]:
+        """gtdaを使用したマッピング処理
+        
+        Args:
+            scaled_returns: スケーリングされたリターンデータ
+            valid_symbols: 有効なETFシンボルのリスト
+            
+        Returns:
+            Tuple[List[List[str]], Dict]: クラスタのリストとMapperグラフ
+        """
+        from gtda.mapper import CubicalCover, make_mapper_pipeline
+        from gtda.mapper import Projection, Eccentricity
+        
+        # カバーとクラスタリングの設定
+        cover = CubicalCover(
+            n_intervals=self.tda_params["resolution"],
+            overlap_frac=self.tda_params["overlap"]
+        )
+        
+        # レンズ関数の設定
+        if self.tda_params["lens_type"] == "knn_distance_10":
+            lens = Eccentricity(n_neighbors=10)
+        else:
+            lens = Projection(columns=[0, 1])
+        
+        # マッパーパイプラインの構築
+        mapper = make_mapper_pipeline(
+            lens=lens,
+            cover=cover,
+            clusterer=OPTICS(**self.optics_params),
+            verbose=True
+        )
+        
+        # マッパーグラフの構築
+        graph = mapper.fit_transform(scaled_returns)
+        
+        print(f"Mapperグラフを構築しました: {len(graph['nodes'])}ノード, {len(graph['links'])}リンク")
+        
+        # グラフからクラスタを抽出
+        return self._extract_clusters_from_graph(graph, valid_symbols)
+    
+    def _perform_alternative_mapping(self, scaled_returns: np.ndarray, valid_symbols: List[str]) -> Tuple[List[List[str]], Dict]:
+        """代替のマッピング処理（TDAライブラリが利用できない場合）
+        
+        Args:
+            scaled_returns: スケーリングされたリターンデータ
+            valid_symbols: 有効なETFシンボルのリスト
+            
+        Returns:
+            Tuple[List[List[str]], Dict]: クラスタのリストとMapperグラフ
+        """
+        from sklearn.neighbors import kneighbors_graph
+        import networkx as nx
+        
+        # k-近傍グラフを構築
+        k = min(10, len(scaled_returns) - 1)  # データポイント数以下のkを選択
+        connectivity = kneighbors_graph(scaled_returns, n_neighbors=k, mode='distance')
+        
+        # NetworkXグラフに変換
+        G = nx.from_scipy_sparse_matrix(connectivity)
+        
+        # ノードをクラスタリング
+        optics = OPTICS(**self.optics_params)
+        labels = optics.fit_predict(scaled_returns)
+        
+        # グラフ構造を作成
+        graph = {
+            'nodes': {},
+            'links': []
+        }
+        
+        # ノード情報を追加
+        for i, label in enumerate(labels):
+            cluster_id = int(label) if label != -1 else -1
+            if cluster_id not in graph['nodes']:
+                graph['nodes'][cluster_id] = []
+            graph['nodes'][cluster_id].append(i)
+        
+        # エッジ情報を追加
+        for edge in G.edges():
+            source, target = edge
+            source_cluster = int(labels[source]) if labels[source] != -1 else -1
+            target_cluster = int(labels[target]) if labels[target] != -1 else -1
+            
+            if source_cluster != -1 and target_cluster != -1 and source_cluster != target_cluster:
+                graph['links'].append((source_cluster, target_cluster))
+        
+        print(f"代替マッパーグラフを構築しました: {len(graph['nodes'])}ノード, {len(graph['links'])}リンク")
+        
+        # グラフからクラスタを抽出
+        return self._extract_clusters_from_graph(graph, valid_symbols)
+    
+    def _extract_clusters_from_graph(self, graph: Dict, valid_symbols: List[str]) -> Tuple[List[List[str]], Dict]:
+        """マッパーグラフからクラスタを抽出する
+        
+        Args:
+            graph: マッパーグラフ
+            valid_symbols: 有効なETFシンボルのリスト
+            
+        Returns:
+            Tuple[List[List[str]], Dict]: クラスタのリストとグラフ
+        """
         import networkx as nx
         G = nx.Graph()
         
@@ -356,59 +504,99 @@ class TDAOPTICSClusterer(BaseClusterer):
             symbols: ETFシンボルのリスト
         """
         try:
-            # 可視化方法はscikit-tdaの実装によって異なる
-            if 'sklearn_tda' in globals():
-                from sklearn_tda.visualization import plot_mapper_graph
-                
-                # Mapper可視化をファイルに保存
-                mapper_path = os.path.join(self.results_dir, "etf_tda_mapper_graph.png")
-                
-                plt.figure(figsize=(12, 10))
-                plot_mapper_graph(graph, node_size=50)
-                plt.title("ETF TDA Mapper Graph")
-                plt.savefig(mapper_path, dpi=300, bbox_inches='tight')
-                plt.close()
-            elif 'gtda' in globals():
-                from gtda.plotting import plot_static_mapper_graph
-                
-                # Mapper可視化をファイルに保存
-                mapper_path = os.path.join(self.results_dir, "etf_tda_mapper_graph.png")
-                
-                plt.figure(figsize=(12, 10))
-                plot_static_mapper_graph(graph)
-                plt.title("ETF TDA Mapper Graph")
-                plt.savefig(mapper_path, dpi=300, bbox_inches='tight')
-                plt.close()
+            # TDAライブラリに基づいた可視化
+            if tda_package_info['package_name'] == 'sklearn_tda':
+                self._visualize_sklearn_tda_results(graph)
+            elif tda_package_info['package_name'] == 'gtda':
+                self._visualize_gtda_results(graph)
             else:
-                # NetworkXを使った基本的な可視化
-                import networkx as nx
+                self._visualize_fallback_results(graph)
                 
-                # グラフ構造をNetworkXに変換
-                G = nx.Graph()
-                
-                # ノードを追加
-                for node_id, indices in graph['nodes'].items():
-                    G.add_node(node_id, size=len(indices))
-                
-                # エッジを追加
-                for source, target in graph['links']:
-                    G.add_edge(source, target)
-                
-                # 可視化
-                mapper_path = os.path.join(self.results_dir, "etf_tda_mapper_graph.png")
-                
-                plt.figure(figsize=(12, 10))
-                pos = nx.spring_layout(G, seed=RANDOM_SEED)
-                node_sizes = [G.nodes[n].get('size', 10) * 20 for n in G.nodes()]
-                nx.draw(G, pos, with_labels=True, node_size=node_sizes, 
-                        node_color='skyblue', font_size=8)
-                plt.title("ETF TDA Mapper Graph")
-                plt.savefig(mapper_path, dpi=300, bbox_inches='tight')
-                plt.close()
+        except Exception as e:
+            print(f"TDA可視化エラー: {str(e)}")
+            # フォールバックの可視化
+            self._visualize_fallback_results(graph)
+    
+    def _visualize_sklearn_tda_results(self, graph):
+        """sklearn_tdaを使用した可視化
+        
+        Args:
+            graph: マッパーグラフ
+        """
+        try:
+            from sklearn_tda.visualization import plot_mapper_graph
+            
+            # Mapper可視化をファイルに保存
+            mapper_path = os.path.join(self.results_dir, "etf_tda_mapper_graph.png")
+            
+            plt.figure(figsize=(12, 10))
+            plot_mapper_graph(graph, node_size=50)
+            plt.title("ETF TDA Mapper Graph (sklearn_tda)")
+            plt.savefig(mapper_path, dpi=300, bbox_inches='tight')
+            plt.close()
             
             print(f"Mapper可視化を保存しました: {mapper_path}")
         except Exception as e:
-            print(f"TDA可視化エラー: {str(e)}")
+            logger.warning(f"sklearn_tda可視化エラー: {str(e)}")
+            # フォールバックを使用
+            self._visualize_fallback_results(graph)
+    
+    def _visualize_gtda_results(self, graph):
+        """gtdaを使用した可視化
+        
+        Args:
+            graph: マッパーグラフ
+        """
+        try:
+            from gtda.plotting import plot_static_mapper_graph
+            
+            # Mapper可視化をファイルに保存
+            mapper_path = os.path.join(self.results_dir, "etf_tda_mapper_graph.png")
+            
+            plt.figure(figsize=(12, 10))
+            plot_static_mapper_graph(graph)
+            plt.title("ETF TDA Mapper Graph (gtda)")
+            plt.savefig(mapper_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            print(f"Mapper可視化を保存しました: {mapper_path}")
+        except Exception as e:
+            logger.warning(f"gtda可視化エラー: {str(e)}")
+            # フォールバックを使用
+            self._visualize_fallback_results(graph)
+    
+    def _visualize_fallback_results(self, graph):
+        """フォールバックの可視化
+        
+        Args:
+            graph: マッパーグラフ
+        """
+        import networkx as nx
+        
+        # グラフ構造をNetworkXに変換
+        G = nx.Graph()
+        
+        # ノードを追加
+        for node_id, indices in graph['nodes'].items():
+            G.add_node(node_id, size=len(indices))
+        
+        # エッジを追加
+        for source, target in graph['links']:
+            G.add_edge(source, target)
+        
+        # 可視化
+        mapper_path = os.path.join(self.results_dir, "etf_tda_mapper_graph.png")
+        
+        plt.figure(figsize=(12, 10))
+        pos = nx.spring_layout(G, seed=RANDOM_SEED)
+        node_sizes = [G.nodes[n].get('size', 10) * 20 for n in G.nodes()]
+        nx.draw(G, pos, with_labels=True, node_size=node_sizes, 
+                node_color='skyblue', font_size=8)
+        plt.title("ETF TDA Mapper Graph (フォールバック)")
+        plt.savefig(mapper_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Mapper可視化を保存しました: {mapper_path}")
     
     def _fallback_clustering(self, etfs, returns_df):
         """Scikit-TDAが利用できない場合のフォールバック
