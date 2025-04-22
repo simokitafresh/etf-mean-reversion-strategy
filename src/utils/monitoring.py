@@ -1,12 +1,16 @@
-# src/utils/monitoring.py として新しく作成
+# src/utils/monitoring.py
 
 import os
 import psutil
 import platform
 import time
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from IPython.display import display, HTML
+import sys
+import gc
+import weakref
 
 class PerformanceMonitor:
     """メモリ使用量とパフォーマンスのモニタリングユーティリティ"""
@@ -22,6 +26,9 @@ class PerformanceMonitor:
         self.checkpoints = []
         self.log_to_file = log_to_file
         self.log_file = log_file
+        
+        # 大きなオブジェクトの弱参照を保持する辞書
+        self.large_objects = {}
         
         if log_to_file:
             os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -88,6 +95,16 @@ class PerformanceMonitor:
             display(HTML(html))
         else:
             print("メモリ使用量を取得できませんでした")
+    
+    def track_object(self, obj, name):
+        """大きなオブジェクトを追跡する
+        
+        Args:
+            obj: 追跡するオブジェクト
+            name: オブジェクトの識別名
+        """
+        self.large_objects[name] = weakref.ref(obj)
+        print(f"オブジェクト '{name}' の追跡を開始しました")
     
     def get_summary(self):
         """モニタリング結果のサマリーを表として取得する"""
@@ -171,7 +188,22 @@ class PerformanceMonitor:
             print(f"総メモリ使用量の増加: {total_memory_increase:.2f} GB")
             print(f"総実行時間: {df['elapsed'].iloc[-1]:.2f}秒")
 
-# 使いやすいインターフェース関数
+    def clear_large_objects(self):
+        """追跡されている大きなオブジェクトを解放する"""
+        cleared_count = 0
+        for name, obj_ref in list(self.large_objects.items()):
+            obj = obj_ref()
+            if obj is not None:
+                print(f"オブジェクト '{name}' を解放します")
+                del obj
+                cleared_count += 1
+            
+            # 辞書からも削除
+            del self.large_objects[name]
+        
+        return cleared_count
+
+# シングルトンインスタンス
 monitor = PerformanceMonitor()
 
 def display_memory_usage():
@@ -186,3 +218,104 @@ def show_memory_summary():
     """メモリ使用量のサマリーを表示する"""
     monitor.display_summary()
     monitor.plot_memory_usage()
+
+def track_large_object(obj, name):
+    """大きなオブジェクトを追跡する"""
+    monitor.track_object(obj, name)
+
+def garbage_collect(aggressive=True):
+    """ガベージコレクションを強制的に実行する
+    
+    Args:
+        aggressive: 積極的なメモリ解放を行うかどうか
+        
+    Returns:
+        float: 解放されたメモリ量（GB）
+    """
+    before = check_memory("GC前")
+    
+    # 標準GCを実行
+    gc.collect()
+    
+    if aggressive:
+        # 未使用のキャッシュをクリア
+        try:
+            # numpyのキャッシュをクリア
+            if hasattr(np, '_clear_caches'):  # 新しいバージョンのnumpy
+                np._clear_caches()  
+            elif hasattr(np.core, '_internal_caches'):  # 古いバージョンのnumpy
+                for cache in np.core._internal_caches():
+                    cache.clear()
+                
+            # pandasのキャッシュをクリア
+            if hasattr(pd, '_libs') and hasattr(pd._libs, 'hashtable'):
+                if hasattr(pd._libs.hashtable, '_clear_caches'):
+                    pd._libs.hashtable._clear_caches()
+        except Exception as e:
+            print(f"キャッシュクリア中にエラーが発生しました: {str(e)}")
+        
+        # 大きなオブジェクトを解放
+        monitor.clear_large_objects()
+        
+        # 循環参照を解消するために複数回GCを実行
+        for _ in range(3):
+            gc.collect()
+        
+        # IPythonの変数履歴をクリア（IPythonの環境にある場合）
+        try:
+            from IPython import get_ipython
+            ipython = get_ipython()
+            if ipython is not None:
+                ipython.magic("reset -f array_")
+                ipython.magic("reset -f df_")
+                ipython.magic("reset -f tmp_")
+        except:
+            pass
+        
+        # 明示的に未使用のモジュールをアンロード
+        unused_modules = []
+        for module_name in list(sys.modules.keys()):
+            if module_name.startswith('_') or module_name in [
+                'numpy', 'pandas', 'matplotlib', 'IPython', 'gc', 'weakref', 
+                'psutil', 'platform', 'time', 'HTML'
+            ]:
+                continue
+            
+            if module_name.startswith(('tmp_', 'test_', 'cache_')):
+                unused_modules.append(module_name)
+        
+        for module_name in unused_modules:
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+    
+    # システムに実際のメモリを解放するようリクエスト（LinuxおよびmacOSのみ）
+    if platform.system() in ['Linux', 'Darwin']:
+        try:
+            # madviseを呼び出して不要なページを解放
+            import ctypes
+            if platform.system() == 'Linux':
+                libc = ctypes.CDLL('libc.so.6')
+                MADV_DONTNEED = 4  # Linux用の定数
+                libc.malloc_trim(0)  # システムにメモリを返す
+            elif platform.system() == 'Darwin':
+                libc = ctypes.CDLL('libc.dylib')
+                MADV_FREE = 5  # macOS用の定数
+        except:
+            pass
+    
+    # 最終的なGCを実行
+    gc.collect()
+    
+    after = check_memory("GC後")
+    released = max(0, before - after)
+    print(f"解放されたメモリ: {released:.2f} GB")
+    
+    # 解放後もまだメモリ使用量が多い場合は警告
+    if after > 10:
+        print(f"警告: GC後もメモリ使用量が高いままです ({after:.2f} GB)")
+        print("対処法: ")
+        print(" - 大きなデータフレームや配列を明示的に削除してください")
+        print(" - track_large_object()で明示的に大きなオブジェクトを追跡してください")
+        print(" - データの処理を小さなチャンクに分割してください")
+    
+    return released
