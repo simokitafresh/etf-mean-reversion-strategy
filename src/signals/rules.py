@@ -40,8 +40,8 @@ def detect_overshoots(data: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
         Tuple: (買いオーバーシュート, 売りオーバーシュート)のタプル
     """
     # Bollingerバンドのオーバーシュート
-    bb_buy = data['Adj Close'] < data['BB_Lower']
-    bb_sell = data['Adj Close'] > data['BB_Upper']
+    bb_buy = data['Close'] < data['BB_Lower']
+    bb_sell = data['Close'] > data['BB_Upper']
     
     # Stochasticオーバーシュート（クロスオーバー）
     stoch_buy = (data['Stoch_K'] < 20) & (data['Stoch_K'] > data['Stoch_D']) & (data['Stoch_K'].shift(1) <= data['Stoch_D'].shift(1))
@@ -101,7 +101,7 @@ def generate_signals(
     buy_mask = result['Buy_Signal']
     if buy_mask.any():
         # Bollingerバンド逸脱度（0〜1のスケール）
-        bb_deviation = (result['BB_Lower'] - result['Adj Close']) / result['BB_Lower']
+        bb_deviation = (result['BB_Lower'] - result['Close']) / result['BB_Lower']
         # Stochastic極値度（0〜1のスケール、20に近いほど0に近づく）
         stoch_extremity = (20 - result['Stoch_K']) / 20
         
@@ -112,7 +112,7 @@ def generate_signals(
     sell_mask = result['Sell_Signal']
     if sell_mask.any():
         # Bollingerバンド逸脱度（0〜1のスケール）
-        bb_deviation = (result['Adj Close'] - result['BB_Upper']) / result['BB_Upper']
+        bb_deviation = (result['Close'] - result['BB_Upper']) / result['BB_Upper']
         # Stochastic極値度（0〜1のスケール、80に近いほど0に近づく）
         stoch_extremity = (result['Stoch_K'] - 80) / 20
         
