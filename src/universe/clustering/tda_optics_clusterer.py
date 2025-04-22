@@ -14,15 +14,22 @@ from .base_clusterer import BaseClusterer
 # 再現性のためのランダムシード
 RANDOM_SEED = 42
 
-# インストール済みのScikit-TDAライブラリを使用
+# Scikit-TDAパッケージチェック
 try:
-    from kmapper import KeplerMapper
-    from ripser import Rips
-    from persim import plot_diagrams
+    from sklearn_tda import Mapper
+    from sklearn_tda.preprocessing import Scaler
+    from sklearn_tda.plot import plot_diagram
     SKLEARN_TDA_AVAILABLE = True
 except ImportError:
-    SKLEARN_TDA_AVAILABLE = False
-    warnings.warn("Scikit-TDAがインストールされていません。従来のクラスタリング方法を使用します。")
+    try:
+        # 代替インポート（scikit-tdaの最新バージョン）
+        from gtda.mapper import Mapper
+        from gtda.mapper import plot_static_mapper_graph
+        SKLEARN_TDA_AVAILABLE = True
+    except ImportError:
+        # fallback
+        SKLEARN_TDA_AVAILABLE = False
+        warnings.warn("Scikit-TDAがインストールされていません。従来のクラスタリング方法を使用します。")
 
 class TDAOPTICSClusterer(BaseClusterer):
     """TDAとOPTICSを組み合わせたクラスタリング"""
@@ -175,21 +182,103 @@ class TDAOPTICSClusterer(BaseClusterer):
         scaler = StandardScaler()
         scaled_returns = scaler.fit_transform(returns_data)
         
-        # KeplerMapper初期化
-        mapper = KeplerMapper()
-        
-        # 投影（lens）関数を適用
-        lens = mapper.fit_transform(scaled_returns, projection=self.tda_params["lens_type"])
-        
-        # Mapper グラフを構築
-        graph = mapper.map(
-            lens, 
-            scaled_returns,
-            cover=[[0, 1, self.tda_params["resolution"], self.tda_params["overlap"]]],
-            clusterer=OPTICS(**self.optics_params)
-        )
-        
-        print(f"Mapperグラフを構築しました: {len(graph['nodes'])}ノード, {len(graph['links'])}リンク")
+        try:
+            # scikit-tda方式でのマッパー作成
+            if 'sklearn_tda' in globals():
+                # Mapperオブジェクトの作成
+                mapper = Mapper(
+                    verbose=0,
+                    coverer="uniform", 
+                    n_cubes=self.tda_params["resolution"],
+                    overlap=self.tda_params["overlap"]
+                )
+                
+                # フィルター（レンズ）関数の適用
+                # KNN距離と同等の機能を使用
+                if self.tda_params["lens_type"] == "knn_distance_10":
+                    from sklearn.neighbors import NearestNeighbors
+                    nn = NearestNeighbors(n_neighbors=10)
+                    nn.fit(scaled_returns)
+                    lens = nn.kneighbors(scaled_returns, return_distance=True)[0].mean(axis=1).reshape(-1, 1)
+                else:
+                    # デフォルトはデータそのものを使用
+                    lens = scaled_returns
+                
+                # Mapperグラフを構築
+                graph = mapper.fit_transform(
+                    lens,
+                    scaled_returns,
+                    clusterer=OPTICS(**self.optics_params)
+                )
+            else:
+                # gtda方式でのマッパー作成
+                from gtda.mapper import CubicalCover, make_mapper_pipeline
+                from gtda.mapper import Projection, Eccentricity
+                
+                # カバーとクラスタリングの設定
+                cover = CubicalCover(
+                    n_intervals=self.tda_params["resolution"],
+                    overlap_frac=self.tda_params["overlap"]
+                )
+                
+                # レンズ関数の設定
+                if self.tda_params["lens_type"] == "knn_distance_10":
+                    lens = Eccentricity(n_neighbors=10)
+                else:
+                    lens = Projection(columns=[0, 1])
+                
+                # マッパーパイプラインの構築
+                mapper = make_mapper_pipeline(
+                    lens=lens,
+                    cover=cover,
+                    clusterer=OPTICS(**self.optics_params),
+                    verbose=True
+                )
+                
+                # マッパーグラフの構築
+                graph = mapper.fit_transform(scaled_returns)
+            
+            print(f"Mapperグラフを構築しました: {len(graph['nodes'])}ノード, {len(graph['links'])}リンク")
+        except Exception as e:
+            print(f"TDAマッパー構築エラー: {str(e)}。代替アプローチを使用します。")
+            # 代替アプローチ：scikit-learn のみで簡易TDAを実装
+            from sklearn.neighbors import kneighbors_graph
+            import networkx as nx
+            
+            # k-近傍グラフを構築
+            k = min(10, len(scaled_returns) - 1)  # データポイント数以下のkを選択
+            connectivity = kneighbors_graph(scaled_returns, n_neighbors=k, mode='distance')
+            
+            # NetworkXグラフに変換
+            G = nx.from_scipy_sparse_matrix(connectivity)
+            
+            # ノードをクラスタリング
+            optics = OPTICS(**self.optics_params)
+            labels = optics.fit_predict(scaled_returns)
+            
+            # グラフ構造を作成
+            graph = {
+                'nodes': {},
+                'links': []
+            }
+            
+            # ノード情報を追加
+            for i, label in enumerate(labels):
+                cluster_id = int(label) if label != -1 else -1
+                if cluster_id not in graph['nodes']:
+                    graph['nodes'][cluster_id] = []
+                graph['nodes'][cluster_id].append(i)
+            
+            # エッジ情報を追加
+            for edge in G.edges():
+                source, target = edge
+                source_cluster = int(labels[source]) if labels[source] != -1 else -1
+                target_cluster = int(labels[target]) if labels[target] != -1 else -1
+                
+                if source_cluster != -1 and target_cluster != -1 and source_cluster != target_cluster:
+                    graph['links'].append((source_cluster, target_cluster))
+            
+            print(f"代替マッパーグラフを構築しました: {len(graph['nodes'])}ノード, {len(graph['links'])}リンク")
         
         # クラスタの抽出（接続成分をクラスタとして使用）
         import networkx as nx
@@ -267,17 +356,56 @@ class TDAOPTICSClusterer(BaseClusterer):
             symbols: ETFシンボルのリスト
         """
         try:
-            from kmapper import visualization
+            # 可視化方法はscikit-tdaの実装によって異なる
+            if 'sklearn_tda' in globals():
+                from sklearn_tda.visualization import plot_mapper_graph
+                
+                # Mapper可視化をファイルに保存
+                mapper_path = os.path.join(self.results_dir, "etf_tda_mapper_graph.png")
+                
+                plt.figure(figsize=(12, 10))
+                plot_mapper_graph(graph, node_size=50)
+                plt.title("ETF TDA Mapper Graph")
+                plt.savefig(mapper_path, dpi=300, bbox_inches='tight')
+                plt.close()
+            elif 'gtda' in globals():
+                from gtda.plotting import plot_static_mapper_graph
+                
+                # Mapper可視化をファイルに保存
+                mapper_path = os.path.join(self.results_dir, "etf_tda_mapper_graph.png")
+                
+                plt.figure(figsize=(12, 10))
+                plot_static_mapper_graph(graph)
+                plt.title("ETF TDA Mapper Graph")
+                plt.savefig(mapper_path, dpi=300, bbox_inches='tight')
+                plt.close()
+            else:
+                # NetworkXを使った基本的な可視化
+                import networkx as nx
+                
+                # グラフ構造をNetworkXに変換
+                G = nx.Graph()
+                
+                # ノードを追加
+                for node_id, indices in graph['nodes'].items():
+                    G.add_node(node_id, size=len(indices))
+                
+                # エッジを追加
+                for source, target in graph['links']:
+                    G.add_edge(source, target)
+                
+                # 可視化
+                mapper_path = os.path.join(self.results_dir, "etf_tda_mapper_graph.png")
+                
+                plt.figure(figsize=(12, 10))
+                pos = nx.spring_layout(G, seed=RANDOM_SEED)
+                node_sizes = [G.nodes[n].get('size', 10) * 20 for n in G.nodes()]
+                nx.draw(G, pos, with_labels=True, node_size=node_sizes, 
+                        node_color='skyblue', font_size=8)
+                plt.title("ETF TDA Mapper Graph")
+                plt.savefig(mapper_path, dpi=300, bbox_inches='tight')
+                plt.close()
             
-            # Mapper可視化をファイルに保存
-            mapper_path = os.path.join(self.results_dir, "etf_tda_mapper_graph.html")
-            
-            visualization.save_html(
-                graph, 
-                mapper_path, 
-                custom_title="ETF TDA Mapper Graph",
-                custom_tooltips=symbols
-            )
             print(f"Mapper可視化を保存しました: {mapper_path}")
         except Exception as e:
             print(f"TDA可視化エラー: {str(e)}")
