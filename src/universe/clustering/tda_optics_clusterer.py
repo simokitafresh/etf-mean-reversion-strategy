@@ -1,0 +1,349 @@
+# src/universe/clustering/tda_optics_clusterer.py
+
+"""TDA+OPTICSクラスタリング実装"""
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import OPTICS
+import matplotlib.pyplot as plt
+import os
+import warnings
+from typing import List, Dict, Any, Tuple
+
+from .base_clusterer import BaseClusterer
+
+# 再現性のためのランダムシード
+RANDOM_SEED = 42
+
+# インストール済みのScikit-TDAライブラリを使用
+try:
+    from kmapper import KeplerMapper
+    from ripser import Rips
+    from persim import plot_diagrams
+    SKLEARN_TDA_AVAILABLE = True
+except ImportError:
+    SKLEARN_TDA_AVAILABLE = False
+    warnings.warn("Scikit-TDAがインストールされていません。従来のクラスタリング方法を使用します。")
+
+class TDAOPTICSClusterer(BaseClusterer):
+    """TDAとOPTICSを組み合わせたクラスタリング"""
+    
+    def __init__(self, **kwargs):
+        """初期化"""
+        super().__init__(name="tda_optics", **kwargs)
+        
+        # TDA用パラメータ
+        self.tda_params = {
+            "resolution": kwargs.get("resolution", 10),
+            "overlap": kwargs.get("overlap", 0.5),
+            "lens_type": kwargs.get("lens_type", "knn_distance_10")
+        }
+        
+        # OPTICS用パラメータ
+        self.optics_params = {
+            "min_samples": kwargs.get("min_samples", 2),
+            "xi": kwargs.get("xi", 0.05),
+            "min_cluster_size": kwargs.get("min_cluster_size", 2),
+            "n_jobs": kwargs.get("n_jobs", -1)
+        }
+    
+    def perform_clustering(self, etfs: List[Dict[str, Any]], returns_df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """TDAとOPTICSを組み合わせたクラスタリングを実行
+        
+        Args:
+            etfs: ETF情報のリスト
+            returns_df: リターンデータのデータフレーム
+            
+        Returns:
+            List[Dict[str, Any]]: 選択されたETFのリスト
+        """
+        if not SKLEARN_TDA_AVAILABLE:
+            warnings.warn("Scikit-TDAが利用できないため、OPTICSのみを使用します")
+            # OPTICSのみを使用するフォールバック
+            return self._fallback_clustering(etfs, returns_df)
+        
+        print("TDA+OPTICSハイブリッドクラスタリングを実行中...")
+        
+        # 対象シンボルとリターンデータの整合性確認
+        symbols = [etf['symbol'] for etf in etfs]
+        valid_symbols = [s for s in symbols if s in returns_df.columns]
+        
+        if len(valid_symbols) < len(symbols):
+            print(f"警告: {len(symbols) - len(valid_symbols)}銘柄のデータが欠落しています")
+        
+        if len(valid_symbols) < 2:
+            print("エラー: クラスタリングに十分なデータがありません")
+            return etfs
+        
+        # 有効なシンボルのリターンデータを取得
+        valid_returns = returns_df[valid_symbols]
+        
+        # 1. TDAクラスタリング - マクロ構造の把握
+        tda_clusters, tda_graph = self._perform_tda_clustering(valid_returns.values)
+        
+        # 2. TDA結果の可視化（オプション）
+        try:
+            self._visualize_tda_results(tda_graph, etfs, valid_symbols)
+        except Exception as e:
+            print(f"TDA可視化エラー: {str(e)}")
+        
+        # 3. 各TDAクラスタ内でOPTICSによる細分化
+        refined_clusters = []
+        cluster_labels = np.full(len(valid_symbols), -1)  # デフォルトはノイズ
+        
+        next_cluster_id = 0
+        
+        for cluster_idx, tda_cluster in enumerate(tda_clusters):
+            # クラスタ内のインデックスを取得
+            cluster_indices = [valid_symbols.index(symbol) for symbol in tda_cluster 
+                              if symbol in valid_symbols]
+            
+            if len(cluster_indices) < 2:
+                # 1つしかない場合は別クラスタとして追加
+                for idx in cluster_indices:
+                    cluster_labels[idx] = next_cluster_id
+                    next_cluster_id += 1
+                continue
+            
+            # クラスタのリターンデータを取得
+            cluster_returns = valid_returns.iloc[:, cluster_indices]
+            
+            # OPTICSクラスタリングを適用
+            optics_labels = self._perform_optics_clustering(cluster_returns.values.T)
+            
+            # クラスタラベルを更新
+            unique_optics_labels = np.unique(optics_labels)
+            for optics_label in unique_optics_labels:
+                if optics_label == -1:  # ノイズは-1のまま
+                    continue
+                
+                # 新しいクラスタIDを割り当て
+                sub_indices = [cluster_indices[i] for i, label in enumerate(optics_labels) 
+                              if label == optics_label]
+                
+                for idx in sub_indices:
+                    cluster_labels[idx] = next_cluster_id
+                
+                # サブクラスタの情報を追加
+                sub_cluster = [valid_symbols[idx] for idx in sub_indices]
+                refined_clusters.append(sub_cluster)
+                
+                next_cluster_id += 1
+        
+        # 4. 結果の2D埋め込みと可視化
+        embedding = self._create_2d_embedding(valid_returns.values.T)
+        self.visualize_clusters(
+            [etf for etf in etfs if etf['symbol'] in valid_symbols],
+            cluster_labels,
+            embedding,
+            title=f'TDA+OPTICS ハイブリッドクラスタリング (クラスタ数: {next_cluster_id})'
+        )
+        
+        # 5. クラスタラベルをETF情報に追加
+        etf_clusters = []
+        for i, etf in enumerate(etfs):
+            symbol = etf['symbol']
+            if symbol in valid_symbols:
+                idx = valid_symbols.index(symbol)
+                etf_info = etf.copy()
+                etf_info['cluster'] = int(cluster_labels[idx])
+                etf_clusters.append(etf_info)
+            else:
+                # データのないETFはノイズクラスタに
+                etf_info = etf.copy()
+                etf_info['cluster'] = -1
+                etf_clusters.append(etf_info)
+        
+        # 6. 各クラスタから代表ETFを選択
+        selected_etfs = self.select_representative_etfs(etf_clusters, valid_returns)
+        
+        print(f"TDA+OPTICSクラスタリング完了: {len(selected_etfs)}銘柄を選択")
+        return selected_etfs
+    
+    def _perform_tda_clustering(self, returns_data: np.ndarray) -> Tuple[List[List[str]], Dict]:
+        """TDAクラスタリングを実行
+        
+        Args:
+            returns_data: リターンデータの配列
+            
+        Returns:
+            Tuple[List[List[str]], Dict]: クラスタのリストとMapperグラフ
+        """
+        print("TDA (Mapper)クラスタリングを実行中...")
+        
+        # データの標準化
+        scaler = StandardScaler()
+        scaled_returns = scaler.fit_transform(returns_data)
+        
+        # KeplerMapper初期化
+        mapper = KeplerMapper()
+        
+        # 投影（lens）関数を適用
+        lens = mapper.fit_transform(scaled_returns, projection=self.tda_params["lens_type"])
+        
+        # Mapper グラフを構築
+        graph = mapper.map(
+            lens, 
+            scaled_returns,
+            cover=[[0, 1, self.tda_params["resolution"], self.tda_params["overlap"]]],
+            clusterer=OPTICS(**self.optics_params)
+        )
+        
+        print(f"Mapperグラフを構築しました: {len(graph['nodes'])}ノード, {len(graph['links'])}リンク")
+        
+        # クラスタの抽出（接続成分をクラスタとして使用）
+        import networkx as nx
+        G = nx.Graph()
+        
+        # ノードを追加
+        for node_id in graph['nodes'].keys():
+            G.add_node(node_id)
+        
+        # エッジを追加
+        for link in graph['links']:
+            source, target = link
+            G.add_edge(source, target)
+        
+        # 接続成分（クラスタ）を取得
+        connected_components = list(nx.connected_components(G))
+        
+        # クラスタ（ETFシンボルのリスト）を構築
+        clusters = []
+        for component in connected_components:
+            cluster_indices = set()
+            for node_id in component:
+                cluster_indices.update(graph['nodes'][node_id])
+            
+            cluster_symbols = [valid_symbols[idx] for idx in cluster_indices 
+                              if idx < len(valid_symbols)]
+            
+            if cluster_symbols:  # 空でない場合のみ追加
+                clusters.append(cluster_symbols)
+        
+        return clusters, graph
+    
+    def _perform_optics_clustering(self, data: np.ndarray) -> np.ndarray:
+        """OPTICSクラスタリングを実行
+        
+        Args:
+            data: クラスタリング対象データ
+            
+        Returns:
+            np.ndarray: クラスタラベル
+        """
+        # データの標準化
+        scaler = StandardScaler()
+        scaled_data = scaler.fit_transform(data)
+        
+        # OPTICSクラスタリング
+        optics = OPTICS(**self.optics_params)
+        labels = optics.fit_predict(scaled_data)
+        
+        return labels
+    
+    def _create_2d_embedding(self, data: np.ndarray) -> np.ndarray:
+        """2次元埋め込みを作成
+        
+        Args:
+            data: 埋め込み対象データ
+            
+        Returns:
+            np.ndarray: 2次元埋め込み
+        """
+        from sklearn.decomposition import PCA
+        
+        # 2次元に削減
+        pca = PCA(n_components=2, random_state=RANDOM_SEED)
+        embedding = pca.fit_transform(data)
+        
+        return embedding
+    
+    def _visualize_tda_results(self, graph, etfs, symbols):
+        """TDAクラスタリング結果の可視化
+        
+        Args:
+            graph: KeplerMapperグラフ
+            etfs: ETF情報のリスト
+            symbols: ETFシンボルのリスト
+        """
+        try:
+            from kmapper import visualization
+            
+            # Mapper可視化をファイルに保存
+            mapper_path = os.path.join(self.results_dir, "etf_tda_mapper_graph.html")
+            
+            visualization.save_html(
+                graph, 
+                mapper_path, 
+                custom_title="ETF TDA Mapper Graph",
+                custom_tooltips=symbols
+            )
+            print(f"Mapper可視化を保存しました: {mapper_path}")
+        except Exception as e:
+            print(f"TDA可視化エラー: {str(e)}")
+    
+    def _fallback_clustering(self, etfs, returns_df):
+        """Scikit-TDAが利用できない場合のフォールバック
+        
+        Args:
+            etfs: ETF情報のリスト
+            returns_df: リターンデータのデータフレーム
+            
+        Returns:
+            List[Dict[str, Any]]: 選択されたETFのリスト
+        """
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.cluster import OPTICS
+        
+        print("フォールバック: OPTICSクラスタリングを実行中...")
+        
+        # 対象シンボルとリターンデータの整合性確認
+        symbols = [etf['symbol'] for etf in etfs]
+        valid_symbols = [s for s in symbols if s in returns_df.columns]
+        
+        if len(valid_symbols) < 2:
+            print("エラー: クラスタリングに十分なデータがありません")
+            return etfs
+        
+        # 有効なシンボルのリターンデータを取得
+        valid_returns = returns_df[valid_symbols]
+        
+        # データの標準化
+        scaler = StandardScaler()
+        scaled_returns = scaler.fit_transform(valid_returns.values.T)
+        
+        # OPTICSクラスタリング
+        optics = OPTICS(**self.optics_params)
+        cluster_labels = optics.fit_predict(scaled_returns)
+        
+        # 2次元埋め込み
+        embedding = self._create_2d_embedding(scaled_returns)
+        
+        # 結果の可視化
+        self.visualize_clusters(
+            [etf for etf in etfs if etf['symbol'] in valid_symbols],
+            cluster_labels,
+            embedding,
+            title='OPTICSクラスタリング (TDAフォールバック)'
+        )
+        
+        # クラスタラベルをETF情報に追加
+        etf_clusters = []
+        for i, etf in enumerate(etfs):
+            symbol = etf['symbol']
+            if symbol in valid_symbols:
+                idx = valid_symbols.index(symbol)
+                etf_info = etf.copy()
+                etf_info['cluster'] = int(cluster_labels[idx])
+                etf_clusters.append(etf_info)
+            else:
+                # データのないETFはノイズクラスタに
+                etf_info = etf.copy()
+                etf_info['cluster'] = -1
+                etf_clusters.append(etf_info)
+        
+        # 各クラスタから代表ETFを選択
+        selected_etfs = self.select_representative_etfs(etf_clusters, valid_returns)
+        
+        print(f"フォールバックOPTICSクラスタリング完了: {len(selected_etfs)}銘柄を選択")
+        return selected_etfs
