@@ -228,4 +228,4 @@ def parse_param_key(param_key: str):
     
     except Exception as e:
         print(f"パラメータキーの解析エラー ({param_key}): {str(e)}")
-        return 0, 0, 0, 0, 0, a
+        return 0, 0, 0, 0, 0, holding_period
