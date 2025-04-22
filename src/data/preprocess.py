@@ -43,7 +43,7 @@ def data_quality_check(selected_etfs):
                 continue
             
             # 異常値検出（IQR法）
-            returns = data['Adj Close'].pct_change().dropna()
+            returns = data['Close'].pct_change().dropna()
             Q1 = returns.quantile(0.25)
             Q3 = returns.quantile(0.75)
             IQR = Q3 - Q1
@@ -55,23 +55,26 @@ def data_quality_check(selected_etfs):
             outlier_percentage = outliers / len(returns)
             
             # 欠損値の確認
-            missing_values = data['Adj Close'].isna().sum()
+            missing_values = data['Close'].isna().sum()
             missing_percentage = missing_values / len(data)
             
             # 連続する欠損値を検出
             consecutive_missing = 0
             max_consecutive_missing = 0
             
-            for val in data['Adj Close'].isna():
+            for val in data['Close'].isna():
                 if val:
                     consecutive_missing += 1
                     max_consecutive_missing = max(max_consecutive_missing, consecutive_missing)
                 else:
                     consecutive_missing = 0
             
-            # 分割・配当調整の確認（Adj CloseとCloseの比較）
-            adjustment_ratio = data['Adj Close'] / data['Close']
-            has_adjustments = (adjustment_ratio.std() > 0.0001)  # 調整がある場合は標準偏差が大きい
+            # 分割・配当調整の確認（一貫性のためRenameも変更）
+            try:
+                adjustment_ratio = data['Close'] / data['Open']
+                has_adjustments = (adjustment_ratio.std() > 0.0001)  # 調整がある場合は標準偏差が大きい
+            except:
+                has_adjustments = False
             
             # データ品質情報を追加
             etf['data_quality'] = {
