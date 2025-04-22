@@ -9,6 +9,7 @@ import os
 from typing import Dict, List, Tuple, Any, Optional
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
+from datetime import datetime  # A1: 欠落していた datetime モジュールのインポートを追加
 
 # デフォルトのスタイル設定
 plt.style.use('seaborn-v0_8-whitegrid')
