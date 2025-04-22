@@ -1,5 +1,3 @@
-# src/universe/clustering/__init__.py
-
 """ETFクラスタリングモジュール - 基底クラスと戦略パターン実装"""
 import numpy as np
 import pandas as pd
@@ -8,7 +6,8 @@ import time
 import warnings
 from typing import List, Dict, Any, Optional, Union
 
-from ...data.cache import DataCache
+# 相対インポートの統一（プロジェクト内の別パッケージへの参照）
+from src.data.cache import DataCache
 
 # キャッシュのシングルトンインスタンス
 cache = DataCache()
@@ -23,6 +22,8 @@ def create_clusterer(method='tda_optics', **kwargs):
     Returns:
         BaseClusterer: クラスタリング戦略のインスタンス
     """
+    # 同一パッケージ内のモジュールには明示的な相対インポートを使用
+    from .base_clusterer import BaseClusterer
     from .tda_clusterer import TDAClusterer
     from .optics_clusterer import OPTICSClusterer
     from .pca_optics_clusterer import PCAOPTICSClusterer
