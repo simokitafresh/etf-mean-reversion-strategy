@@ -3,13 +3,23 @@
 import pandas as pd
 import numpy as np
 import itertools
-from typing import List, Dict, Any, Tuple
+import logging
+from typing import List, Dict, Any, Tuple, Optional, Union
 import os
 import time
 from ..data.cache import DataCache
 
+# ロガーの設定
+logger = logging.getLogger(__name__)
+
 # キャッシュのインスタンス化
-cache = DataCache()
+try:
+    cache = DataCache()
+    cache_available = True
+except Exception as e:
+    logger.warning(f"キャッシュ初期化エラー: {str(e)}")
+    logger.info("キャッシュなしで続行します")
+    cache_available = False
 
 def generate_parameter_grid(
     bb_windows: List[int] = [15, 20, 25],
@@ -34,17 +44,71 @@ def generate_parameter_grid(
     Returns:
         List[Dict]: パラメータセットのリスト
     """
+    # B1: パラメータの基本検証
+    # 各リストが空でないか、また要素が有効かをチェック
+    for name, param_list, min_val in [
+        ('bb_windows', bb_windows, 2),
+        ('bb_stds', bb_stds, 0.1),
+        ('stoch_ks', stoch_ks, 2),
+        ('stoch_ds', stoch_ds, 1),
+        ('ema_periods', ema_periods, 2),
+        ('ema_slope_periods', ema_slope_periods, 1),
+        ('holding_periods', holding_periods, 1)
+    ]:
+        if not param_list:
+            logger.warning(f"{name}が空です。デフォルト値を使用します。")
+            if name == 'bb_windows':
+                bb_windows = [20]
+            elif name == 'bb_stds':
+                bb_stds = [2.0]
+            elif name == 'stoch_ks':
+                stoch_ks = [14]
+            elif name == 'stoch_ds':
+                stoch_ds = [3]
+            elif name == 'ema_periods':
+                ema_periods = [200]
+            elif name == 'ema_slope_periods':
+                ema_slope_periods = [20]
+            elif name == 'holding_periods':
+                holding_periods = [5]
+        else:
+            # 無効な値をフィルタリング
+            filtered_list = [x for x in param_list if x >= min_val]
+            if len(filtered_list) < len(param_list):
+                logger.warning(f"{name}に無効な値が含まれています。{min_val}未満の値は除外します。")
+                if name == 'bb_windows':
+                    bb_windows = filtered_list
+                elif name == 'bb_stds':
+                    bb_stds = filtered_list
+                elif name == 'stoch_ks':
+                    stoch_ks = filtered_list
+                elif name == 'stoch_ds':
+                    stoch_ds = filtered_list
+                elif name == 'ema_periods':
+                    ema_periods = filtered_list
+                elif name == 'ema_slope_periods':
+                    ema_slope_periods = filtered_list
+                elif name == 'holding_periods':
+                    holding_periods = filtered_list
+
     # キャッシュから取得を試みる
     param_count = (
         len(bb_windows) * len(bb_stds) * len(stoch_ks) * 
         len(stoch_ds) * len(ema_periods) * len(ema_slope_periods) * 
         len(holding_periods)
     )
+    
+    # B1: パラメータグリッドのサイズチェック
+    if param_count > 1000:
+        logger.warning(f"パラメータグリッドのサイズが非常に大きいです: {param_count}セット")
+        logger.warning("これはメモリ使用量が増加し、計算時間が長くなる可能性があります。")
+    
     cache_key = f"parameter_grid_{param_count}"
-    cached_data = cache.get_json(cache_key)
-    if cached_data:
-        print(f"キャッシュからパラメータグリッド({param_count}セット)を取得しました")
-        return cached_data
+    if cache_available:
+        cached_data = cache.get_json(cache_key)
+        if cached_data:
+            logger.info(f"キャッシュからパラメータグリッド({param_count}セット)を取得しました")
+            return cached_data
     
     # 全パラメータの組み合わせを生成
     param_grid = []
@@ -73,10 +137,14 @@ def generate_parameter_grid(
         }
         param_grid.append(param_set)
     
-    print(f"パラメータグリッドを生成しました: {len(param_grid)}セット")
+    logger.info(f"パラメータグリッドを生成しました: {len(param_grid)}セット")
     
     # キャッシュに保存
-    cache.set_json(cache_key, param_grid)
+    if cache_available:
+        try:
+            cache.set_json(cache_key, param_grid)
+        except Exception as e:
+            logger.warning(f"キャッシュへの保存に失敗しました: {str(e)}")
     
     return param_grid
 
@@ -102,19 +170,48 @@ def run_grid_search(
     # 結果ディレクトリの作成
     os.makedirs("data/results/grid_search", exist_ok=True)
     
+    # B1: 入力パラメータの検証
+    if not universe:
+        logger.error("空のユニバースが提供されました。グリッドサーチを中止します。")
+        return {
+            'by_etf': {},
+            'by_parameter': {},
+            'all_combinations': {},
+            'summary': {'error': '空のユニバース'}
+        }
+    
+    if not param_grid:
+        logger.error("空のパラメータグリッドが提供されました。グリッドサーチを中止します。")
+        return {
+            'by_etf': {},
+            'by_parameter': {},
+            'all_combinations': {},
+            'summary': {'error': '空のパラメータグリッド'}
+        }
+    
     # キャッシュから取得を試みる
     cache_key = f"grid_search_{len(universe)}_{len(param_grid)}"
-    if not recalculate:
+    if not recalculate and cache_available:
         cached_data = cache.get_json(cache_key)
         if cached_data:
-            print(f"キャッシュからグリッドサーチ結果を取得しました")
+            logger.info(f"キャッシュからグリッドサーチ結果を取得しました")
             return cached_data
     
     # シグナルデータが提供されていない場合は計算
     if signals_data is None:
         signals_data = calculate_signals_for_universe(universe, param_grid)
     
-    print(f"{len(universe)}銘柄 × {len(param_grid)}パラメータセットのグリッドサーチを実行します...")
+    # B1: シグナルデータのチェック
+    if not signals_data:
+        logger.warning("シグナルデータが空です。グリッドサーチを続行できません。")
+        return {
+            'by_etf': {},
+            'by_parameter': {},
+            'all_combinations': {},
+            'summary': {'error': 'シグナルデータ取得失敗'}
+        }
+    
+    logger.info(f"{len(universe)}銘柄 × {len(param_grid)}パラメータセットのグリッドサーチを実行します...")
     
     # グリッドサーチ結果
     results = {
@@ -124,34 +221,58 @@ def run_grid_search(
         'summary': {}        # 全体サマリー
     }
     
+    # 進捗表示のための準備
+    total_combinations = len(universe) * len(param_grid)
+    processed = 0
+    start_time = time.time()
+    last_update_time = start_time
+    
     # ETF×パラメータの各組み合わせを評価
     for etf in universe:
-        symbol = etf['symbol']
-        print(f"\n{symbol}の評価中...")
+        symbol = etf.get('symbol')
+        if not symbol:
+            logger.warning(f"シンボルが見つかりません: {etf}")
+            continue
+            
+        logger.info(f"\n{symbol}の評価中...")
         
         etf_results = {}
         
         if symbol not in signals_data:
-            print(f"  警告: {symbol}のシグナルデータがありません")
+            logger.warning(f"  警告: {symbol}のシグナルデータがありません")
             continue
         
         for param_set in param_grid:
-            param_key = param_set['param_key']
-            
+            param_key = param_set.get('param_key')
+            if not param_key:
+                logger.warning(f"パラメータキーが見つかりません: {param_set}")
+                continue
+                
             if param_key not in signals_data[symbol]:
-                print(f"  警告: {symbol}のパラメータセット{param_key}のデータがありません")
+                logger.warning(f"  警告: {symbol}のパラメータセット{param_key}のデータがありません")
                 continue
             
             # CSVからシグナルデータを読み込む
             signal_stats = signals_data[symbol][param_key]
             csv_path = signal_stats.get('csv_path')
             
-            if not os.path.exists(csv_path):
-                print(f"  警告: {csv_path}が見つかりません")
+            if not csv_path or not os.path.exists(csv_path):
+                logger.warning(f"  警告: {csv_path}が見つかりません")
                 continue
             
             try:
                 signal_df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+                
+                # B1: データフレームの基本検証
+                if signal_df.empty:
+                    logger.warning(f"  警告: {csv_path}が空です")
+                    continue
+                
+                required_columns = ['Close', 'Buy_Signal', 'Sell_Signal']
+                missing_columns = [col for col in required_columns if col not in signal_df.columns]
+                if missing_columns:
+                    logger.warning(f"  警告: {csv_path}に必要なカラム{missing_columns}がありません")
+                    continue
                 
                 # 各シグナルの評価
                 # 買いシグナルの評価
@@ -194,14 +315,28 @@ def run_grid_search(
                     'sell': sell_results
                 }
                 
-                print(f"  評価完了: {param_key} - 買い(勝率: {buy_results['win_rate']:.1%}, PF: {buy_results['profit_factor']:.2f}), "
-                      f"売り(勝率: {sell_results['win_rate']:.1%}, PF: {sell_results['profit_factor']:.2f})")
+                # 進捗更新
+                processed += 1
+                current_time = time.time()
+                if current_time - last_update_time >= 5:  # 5秒ごとに進捗表示
+                    elapsed = current_time - start_time
+                    progress = processed / total_combinations
+                    remaining = elapsed / progress - elapsed if progress > 0 else 0
+                    logger.info(f"  進捗: {processed}/{total_combinations} ({progress:.1%}) - "
+                               f"残り約{int(remaining/60)}分{int(remaining)%60}秒")
+                    last_update_time = current_time
+                
+                logger.info(f"  評価完了: {param_key} - 買い(勝率: {buy_results['win_rate']:.1%}, PF: {buy_results['profit_factor']:.2f}), "
+                           f"売り(勝率: {sell_results['win_rate']:.1%}, PF: {sell_results['profit_factor']:.2f})")
             
             except Exception as e:
-                print(f"  エラー - {symbol}/{param_key}の評価: {str(e)}")
+                logger.error(f"  エラー - {symbol}/{param_key}の評価: {str(e)}")
+                import traceback
+                logger.debug(traceback.format_exc())
+                continue
     
     # 全体サマリーの計算
-    print("\n全体サマリーを計算中...")
+    logger.info("\n全体サマリーを計算中...")
     
     # パラメータセットごとのパフォーマンス集計
     param_summary = {}
@@ -215,26 +350,43 @@ def run_grid_search(
         sell_sharpes = []
         
         for symbol, direction_results in etf_results.items():
+            # B1: 有効なサンプル数のみを対象とする
             if direction_results['buy']['sample_count'] >= 30:
-                buy_win_rates.append(direction_results['buy']['win_rate'])
-                buy_pfs.append(direction_results['buy']['profit_factor'])
-                buy_sharpes.append(direction_results['buy']['sharpe_ratio'])
+                # B1: NaN/Infチェックを追加
+                win_rate = direction_results['buy']['win_rate']
+                pf = direction_results['buy']['profit_factor']
+                sharpe = direction_results['buy']['sharpe_ratio']
+                
+                if is_valid_metric(win_rate):
+                    buy_win_rates.append(win_rate)
+                if is_valid_metric(pf) and pf != float('inf'):
+                    buy_pfs.append(pf)
+                if is_valid_metric(sharpe):
+                    buy_sharpes.append(sharpe)
             
             if direction_results['sell']['sample_count'] >= 30:
-                sell_win_rates.append(direction_results['sell']['win_rate'])
-                sell_pfs.append(direction_results['sell']['profit_factor'])
-                sell_sharpes.append(direction_results['sell']['sharpe_ratio'])
+                # B1: NaN/Infチェックを追加
+                win_rate = direction_results['sell']['win_rate']
+                pf = direction_results['sell']['profit_factor']
+                sharpe = direction_results['sell']['sharpe_ratio']
+                
+                if is_valid_metric(win_rate):
+                    sell_win_rates.append(win_rate)
+                if is_valid_metric(pf) and pf != float('inf'):
+                    sell_pfs.append(pf)
+                if is_valid_metric(sharpe):
+                    sell_sharpes.append(sharpe)
         
         # 買いシグナルのサマリー
         buy_summary = {}
         if buy_win_rates:
             buy_summary = {
-                'avg_win_rate': np.mean(buy_win_rates),
-                'std_win_rate': np.std(buy_win_rates),
-                'avg_pf': np.mean(buy_pfs),
-                'std_pf': np.std(buy_pfs),
-                'avg_sharpe': np.mean(buy_sharpes),
-                'std_sharpe': np.std(buy_sharpes),
+                'avg_win_rate': safe_mean(buy_win_rates),
+                'std_win_rate': safe_std(buy_win_rates),
+                'avg_pf': safe_mean(buy_pfs),
+                'std_pf': safe_std(buy_pfs),
+                'avg_sharpe': safe_mean(buy_sharpes),
+                'std_sharpe': safe_std(buy_sharpes),
                 'etf_count': len(buy_win_rates)
             }
         
@@ -242,12 +394,12 @@ def run_grid_search(
         sell_summary = {}
         if sell_win_rates:
             sell_summary = {
-                'avg_win_rate': np.mean(sell_win_rates),
-                'std_win_rate': np.std(sell_win_rates),
-                'avg_pf': np.mean(sell_pfs),
-                'std_pf': np.std(sell_pfs),
-                'avg_sharpe': np.mean(sell_sharpes),
-                'std_sharpe': np.std(sell_sharpes),
+                'avg_win_rate': safe_mean(sell_win_rates),
+                'std_win_rate': safe_std(sell_win_rates),
+                'avg_pf': safe_mean(sell_pfs),
+                'std_pf': safe_std(sell_pfs),
+                'avg_sharpe': safe_mean(sell_sharpes),
+                'std_sharpe': safe_std(sell_sharpes),
                 'etf_count': len(sell_win_rates)
             }
         
@@ -274,17 +426,32 @@ def run_grid_search(
         for p in param_ranking
     ]
     
-    print("グリッドサーチが完了しました")
+    # カバレッジ統計の追加
+    results['summary']['coverage'] = {
+        'total_combinations': total_combinations,
+        'processed_combinations': processed,
+        'coverage_rate': processed / total_combinations if total_combinations > 0 else 0
+    }
+    
+    logger.info("グリッドサーチが完了しました")
+    logger.info(f"カバレッジ: {processed}/{total_combinations} ({processed/total_combinations:.1%})")
     
     # 結果をJSONとして保存
-    import json
-    with open("data/results/grid_search/grid_search_results.json", 'w') as f:
-        json.dump(results, f, indent=2)
-    
-    print("結果を保存しました: data/results/grid_search/grid_search_results.json")
+    try:
+        import json
+        with open("data/results/grid_search/grid_search_results.json", 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        logger.info("結果を保存しました: data/results/grid_search/grid_search_results.json")
+    except Exception as e:
+        logger.error(f"結果のJSON保存に失敗しました: {str(e)}")
     
     # キャッシュに保存
-    cache.set_json(cache_key, results)
+    if cache_available:
+        try:
+            cache.set_json(cache_key, results)
+        except Exception as e:
+            logger.warning(f"キャッシュへの保存に失敗しました: {str(e)}")
     
     return results
 
@@ -303,6 +470,43 @@ def evaluate_signals(
     Returns:
         Dict: 評価結果
     """
+    # B1: 入力データの検証
+    if df is None or df.empty:
+        logger.warning(f"空のデータフレームが渡されました")
+        return {
+            'win_rate': 0,
+            'profit_factor': 0,
+            'avg_return': 0,
+            'std_return': 0,
+            'sharpe_ratio': 0,
+            'sample_count': 0,
+            'wilson_lower': 0
+        }
+    
+    if signal_column not in df.columns:
+        logger.warning(f"シグナル列 '{signal_column}' がデータフレームにありません")
+        return {
+            'win_rate': 0,
+            'profit_factor': 0,
+            'avg_return': 0,
+            'std_return': 0,
+            'sharpe_ratio': 0,
+            'sample_count': 0,
+            'wilson_lower': 0
+        }
+    
+    if 'Close' not in df.columns:
+        logger.warning("'Close'列がデータフレームにありません")
+        return {
+            'win_rate': 0,
+            'profit_factor': 0,
+            'avg_return': 0,
+            'std_return': 0,
+            'sharpe_ratio': 0,
+            'sample_count': 0,
+            'wilson_lower': 0
+        }
+    
     # シグナル日の特定
     signal_days = df[df[signal_column]].index
     
@@ -324,8 +528,16 @@ def evaluate_signals(
     for day in signal_days:
         # 現在の価格
         try:
-            current_price = df.loc[day, 'Adj Close']
-            
+            # B1: 安全なデータアクセス
+            if day not in df.index:
+                logger.debug(f"シグナル日 {day} がデータフレームにありません")
+                continue
+                
+            current_price = df.loc[day, 'Close']
+            if current_price <= 0:
+                logger.debug(f"無効な現在価格: {current_price}")
+                continue
+                
             # 保有期間後の価格（取引日ベース）
             # 保有期間後の日付がデータフレームの範囲を超える場合はスキップ
             future_idx = df.index.get_loc(day) + holding_period
@@ -333,7 +545,11 @@ def evaluate_signals(
                 continue
                 
             future_date = df.index[future_idx]
-            future_price = df.loc[future_date, 'Adj Close']
+            future_price = df.loc[future_date, 'Close']
+            
+            if future_price <= 0:
+                logger.debug(f"無効な将来価格: {future_price}")
+                continue
             
             # リターンの計算
             if signal_column == 'Buy_Signal':
@@ -341,11 +557,22 @@ def evaluate_signals(
             else:  # 'Sell_Signal'
                 ret = (current_price / future_price) - 1
             
+            # B1: NaN/Infinityのチェック
+            if np.isnan(ret) or np.isinf(ret):
+                logger.debug(f"無効なリターン値: {ret}")
+                continue
+                
+            # B1: 極端なリターン値をクリップ
+            if abs(ret) > 5.0:  # 500%を超えるリターンは異常値とみなし、クリップ
+                logger.debug(f"極端なリターン値をクリップ: {ret} -> {np.sign(ret) * 5.0}")
+                ret = np.sign(ret) * 5.0
+            
             returns.append(ret)
             is_win.append(ret > 0)
         
         except Exception as e:
-            print(f"  評価エラー - {day}: {str(e)}")
+            logger.debug(f"リターン計算エラー - {day}: {str(e)}")
+            continue
     
     # 有効なリターンがない場合
     if not returns:
@@ -372,16 +599,19 @@ def evaluate_signals(
     total_wins = winning_trades.sum() if len(winning_trades) > 0 else 0
     total_losses = losing_trades.sum() if len(losing_trades) > 0 else 0
     
-    # Profit Factor
-    profit_factor = (total_wins / total_losses) if total_losses > 0 else (
-        float('inf') if total_wins > 0 else 0
-    )
+    # B1: 安全なProfit Factor計算
+    if total_losses > 0:
+        profit_factor = total_wins / total_losses
+    elif total_wins > 0:
+        profit_factor = float('inf')  # 負けなしの場合
+    else:
+        profit_factor = 0  # 勝ちもなしの場合
     
     # リターンの平均と標準偏差
     avg_return = np.mean(returns)
     std_return = np.std(returns)
     
-    # シャープレシオ（リスクフリーレート0%と仮定）
+    # B1: 安全なシャープレシオ計算
     sharpe_ratio = (avg_return / std_return) if std_return > 0 else 0
     
     # Wilson信頼区間（95%）
@@ -390,10 +620,19 @@ def evaluate_signals(
     z = norm.ppf(0.975)  # 95%信頼区間
     n = len(returns)
     
+    # B1: 安全なWilson区間計算
+    wilson_lower = 0
     if n > 0:
-        wilson_lower = (win_rate + z*z/(2*n) - z * np.sqrt((win_rate*(1-win_rate) + z*z/(4*n))/n)) / (1 + z*z/n)
-    else:
-        wilson_lower = 0
+        try:
+            wilson_denominator = 1 + z*z/n
+            if wilson_denominator != 0:
+                wilson_numerator = win_rate + z*z/(2*n) - z * np.sqrt((win_rate*(1-win_rate) + z*z/(4*n))/n)
+                wilson_lower = wilson_numerator / wilson_denominator
+            else:
+                wilson_lower = 0
+        except Exception as e:
+            logger.debug(f"Wilson信頼区間計算エラー: {str(e)}")
+            wilson_lower = 0
     
     return {
         'win_rate': float(win_rate),
@@ -424,18 +663,27 @@ def calculate_stability_score(buy_summary: Dict, sell_summary: Dict) -> float:
     
     # 買いシグナルのスコア
     if buy_summary and buy_summary.get('etf_count', 0) >= 3:
+        # B1: 安全なスコア計算
         # パフォーマンススコア（高いほど良い）
+        win_rate = buy_summary.get('avg_win_rate', 0)
+        pf = min(buy_summary.get('avg_pf', 0), 3)  # 極端な値を制限
+        sharpe = min(buy_summary.get('avg_sharpe', 0), 2)  # 極端な値を制限
+        
         perf_score = (
-            0.4 * buy_summary.get('avg_win_rate', 0) + 
-            0.3 * min(buy_summary.get('avg_pf', 0), 3) / 3 + 
-            0.3 * min(buy_summary.get('avg_sharpe', 0), 2) / 2
+            0.4 * safe_get(win_rate, 0) + 
+            0.3 * safe_get(pf, 0) / 3 + 
+            0.3 * safe_get(sharpe, 0) / 2
         )
         
         # 安定性スコア（低いほど良い）
+        std_win_rate = min(buy_summary.get('std_win_rate', 1), 0.2)
+        std_pf = min(buy_summary.get('std_pf', 3), 1)
+        std_sharpe = min(buy_summary.get('std_sharpe', 2), 0.5)
+        
         stability = (
-            0.4 * (1 - min(buy_summary.get('std_win_rate', 1), 0.2) / 0.2) + 
-            0.3 * (1 - min(buy_summary.get('std_pf', 3), 1) / 1) + 
-            0.3 * (1 - min(buy_summary.get('std_sharpe', 2), 0.5) / 0.5)
+            0.4 * (1 - safe_get(std_win_rate, 0.2) / 0.2) + 
+            0.3 * (1 - safe_get(std_pf, 1) / 1) + 
+            0.3 * (1 - safe_get(std_sharpe, 0.5) / 0.5)
         )
         
         # 総合スコア
@@ -445,18 +693,27 @@ def calculate_stability_score(buy_summary: Dict, sell_summary: Dict) -> float:
     
     # 売りシグナルのスコア
     if sell_summary and sell_summary.get('etf_count', 0) >= 3:
+        # B1: 安全なスコア計算
         # パフォーマンススコア（高いほど良い）
+        win_rate = sell_summary.get('avg_win_rate', 0)
+        pf = min(sell_summary.get('avg_pf', 0), 3)  # 極端な値を制限
+        sharpe = min(sell_summary.get('avg_sharpe', 0), 2)  # 極端な値を制限
+        
         perf_score = (
-            0.4 * sell_summary.get('avg_win_rate', 0) + 
-            0.3 * min(sell_summary.get('avg_pf', 0), 3) / 3 + 
-            0.3 * min(sell_summary.get('avg_sharpe', 0), 2) / 2
+            0.4 * safe_get(win_rate, 0) + 
+            0.3 * safe_get(pf, 0) / 3 + 
+            0.3 * safe_get(sharpe, 0) / 2
         )
         
         # 安定性スコア（低いほど良い）
+        std_win_rate = min(sell_summary.get('std_win_rate', 1), 0.2)
+        std_pf = min(sell_summary.get('std_pf', 3), 1)
+        std_sharpe = min(sell_summary.get('std_sharpe', 2), 0.5)
+        
         stability = (
-            0.4 * (1 - min(sell_summary.get('std_win_rate', 1), 0.2) / 0.2) + 
-            0.3 * (1 - min(sell_summary.get('std_pf', 3), 1) / 1) + 
-            0.3 * (1 - min(sell_summary.get('std_sharpe', 2), 0.5) / 0.5)
+            0.4 * (1 - safe_get(std_win_rate, 0.2) / 0.2) + 
+            0.3 * (1 - safe_get(std_pf, 1) / 1) + 
+            0.3 * (1 - safe_get(std_sharpe, 0.5) / 0.5)
         )
         
         # 総合スコア
@@ -466,3 +723,28 @@ def calculate_stability_score(buy_summary: Dict, sell_summary: Dict) -> float:
     
     # 平均スコアを返す
     return score / count if count > 0 else 0
+
+# B1: ヘルパー関数の追加
+def is_valid_metric(value):
+    """メトリックが有効かどうか確認する"""
+    return not (np.isnan(value) or np.isinf(value))
+
+def safe_mean(values, default=0):
+    """安全な平均計算（NaN/Infを除外）"""
+    if not values:
+        return default
+    valid_values = [v for v in values if is_valid_metric(v)]
+    return np.mean(valid_values) if valid_values else default
+
+def safe_std(values, default=0):
+    """安全な標準偏差計算（NaN/Infを除外）"""
+    if not values:
+        return default
+    valid_values = [v for v in values if is_valid_metric(v)]
+    return np.std(valid_values) if len(valid_values) > 1 else default
+
+def safe_get(value, default=0):
+    """安全な値取得（NaN/Infの場合はデフォルト値を使用）"""
+    if np.isnan(value) or np.isinf(value):
+        return default
+    return value
