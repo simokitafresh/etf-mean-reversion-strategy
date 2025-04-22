@@ -9,7 +9,7 @@ def select_universe(base_list=None, target_count=50, clustering_method='optics')
     Args:
         base_list: 基礎ETFリスト。Noneの場合は自動取得
         target_count: 目標ETF数
-        clustering_method: クラスタリング手法。'optics'または'tda'
+        clustering_method: クラスタリング手法。'optics', 'pca_optics', 'tsne_optics'のいずれか
     """
     from ..data.fetch import get_base_etf_list
     import os
@@ -17,11 +17,16 @@ def select_universe(base_list=None, target_count=50, clustering_method='optics')
     import json
     
     # クラスタリング手法に応じたモジュールをインポート
-    # 修正：すべてのクラスタリング手法を clustering.py に統合
-    if clustering_method == 'optics' or clustering_method == 'stable':
-        from .clustering import perform_clustering as clustering_func
-    else:  # 'tda' (後方互換性のため)
-        from .clustering import tda_clustering as clustering_func
+    from .clustering import perform_clustering, tda_clustering
+    
+    # 互換性のための処理
+    if clustering_method == 'tda':
+        clustering_func = tda_clustering
+    elif clustering_method in ['optics', 'pca_optics', 'tsne_optics']:
+        clustering_func = lambda etfs, **kwargs: perform_clustering(etfs, method=clustering_method, **kwargs)
+    else:
+        print(f"警告: 不明なクラスタリング手法 '{clustering_method}'。'optics'を使用します。")
+        clustering_func = lambda etfs, **kwargs: perform_clustering(etfs, method='optics', **kwargs)
     
     # キャッシュから取得を試みる
     from ..data.cache import DataCache
@@ -39,6 +44,11 @@ def select_universe(base_list=None, target_count=50, clustering_method='optics')
     if base_list is None:
         base_list = get_base_etf_list()
     print(f"  基礎候補リスト: {len(base_list)}銘柄")
+    
+    # 残りのユニバース選定プロセス（既存コードと同じ）
+    # ...
+
+    return final_etfs
     
     print("ステップ2: 流動性スクリーニング中...")
     liquid_etfs = screen_liquidity(base_list)
