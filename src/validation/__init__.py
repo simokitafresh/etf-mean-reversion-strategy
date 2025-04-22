@@ -52,7 +52,7 @@ def run_statistical_validation(
     # 市場データの取得
     try:
         market_data = yf.download(market_symbol, start=data.index[0], end=data.index[-1], progress=False)
-        market_returns = market_data['Adj Close'].pct_change().dropna()
+        market_returns = market_data['Close'].pct_change().dropna()
     except Exception as e:
         print(f"警告: 市場データの取得に失敗しました - {str(e)}")
         market_returns = pd.Series(index=data.index)
@@ -124,7 +124,7 @@ def run_statistical_validation(
         for day in signal_days:
             # 現在の価格
             try:
-                current_price = data.loc[day, 'Adj Close']
+                current_price = data.loc[day, 'Close']
                 
                 # 保有期間後の価格
                 future_idx = data.index.get_loc(day) + holding_period
@@ -132,7 +132,7 @@ def run_statistical_validation(
                     continue
                     
                 future_date = data.index[future_idx]
-                future_price = data.loc[future_date, 'Adj Close']
+                future_price = data.loc[future_date, 'Close']
                 
                 # リターンの計算
                 if signal_type == 'Buy_Signal':
