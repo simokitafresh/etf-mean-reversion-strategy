@@ -1,5 +1,3 @@
-# src/universe/clustering/tda_optics_clusterer.py
-
 """TDA+OPTICSクラスタリング実装"""
 import numpy as np
 import pandas as pd
@@ -10,6 +8,7 @@ import os
 import warnings
 from typing import List, Dict, Any, Tuple
 
+# 同一パッケージ内の基底クラスを相対インポートで参照
 from .base_clusterer import BaseClusterer
 
 # 再現性のためのランダムシード
