@@ -172,7 +172,7 @@ def run_cpcv_analysis(
         for day in test_signal_days:
             # 現在の価格
             try:
-                current_price = test_data.loc[day, 'Adj Close']
+                current_price = test_data.loc[day, 'Close']
                 
                 # 保有期間後の価格（取引日ベース）
                 # 保有期間後の日付がデータフレームの範囲を超える場合はスキップ
@@ -181,7 +181,7 @@ def run_cpcv_analysis(
                     continue
                     
                 future_date = data.index[future_idx]
-                future_price = data.loc[future_date, 'Adj Close']
+                future_price = data.loc[future_date, 'Close']
                 
                 # リターンの計算
                 if signal_column == 'Buy_Signal':
