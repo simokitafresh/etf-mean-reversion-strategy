@@ -1,5 +1,3 @@
-# src/universe/clustering/base_clusterer.py
-
 """クラスタリング基底クラス"""
 import numpy as np
 import pandas as pd
@@ -11,7 +9,8 @@ import warnings
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Tuple
 
-from ...data.cache import DataCache
+# 絶対インポートの使用（プロジェクト内の別パッケージへの参照）
+from src.data.cache import DataCache
 
 # 再現性のためのランダムシード
 RANDOM_SEED = 42
