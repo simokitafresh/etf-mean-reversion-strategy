@@ -30,10 +30,17 @@ def generate_cpcv_folds(
         if not isinstance(data.index, pd.DatetimeIndex):
             print("警告: データのインデックスが日付型ではありません。ソートのみ行います。")
         
+        # A2: データチェックの強化 - 空のデータフレーム対応
+        if data.empty:
+            print("エラー: 空のデータフレームが渡されました。有効なウィンドウを生成できません。")
+            return []
+        
         dates = data.index.sort_values().tolist()
         
+        # A2: データチェックの強化 - ウィンドウサイズの検証
         if len(dates) < n_splits * 2:
             print(f"警告: データポイントが少なすぎます（{len(dates)}ポイント）。最低でも{n_splits * 2}ポイント必要です。")
+            # データポイント数に基づいて分割数を調整
             n_splits = max(2, len(dates) // 2)
             print(f"分割数を{n_splits}に調整します。")
         
@@ -42,6 +49,11 @@ def generate_cpcv_folds(
         
         # フォールドのサイズを計算
         fold_size = len(dates) // n_splits
+        
+        # A2: フォールドサイズが0になる場合の対応
+        if fold_size == 0:
+            print("エラー: フォールドサイズが0になります。データポイント数が足りません。")
+            return []
         
         # 各フォールドの開始インデックス
         fold_start_indices = [i * fold_size for i in range(n_splits)]
@@ -69,9 +81,21 @@ def generate_cpcv_folds(
             # テスト期間を決定
             test_start, test_end = fold_periods[test_fold_idx]
             
-            # パージウィンドウとエンバーゴウィンドウを適用
-            test_start_idx = dates.index(test_start)
-            test_end_idx = dates.index(test_end)
+            # A2: インデックスエラー回避のための確認
+            try:
+                test_start_idx = dates.index(test_start)
+                test_end_idx = dates.index(test_end)
+            except ValueError as e:
+                print(f"警告: テスト期間の日付が見つかりません: {e}")
+                continue
+            
+            # A2: パージウィンドウとエンバーゴウィンドウのサイズチェック
+            max_window = len(dates) // (n_splits * 2)
+            safe_purge_window = min(purge_window, max_window)
+            safe_embargo_window = min(embargo_window, max_window)
+            
+            if safe_purge_window != purge_window or safe_embargo_window != embargo_window:
+                print(f"警告: ウィンドウサイズを調整しました。パージ: {purge_window}->{safe_purge_window}, エンバーゴ: {embargo_window}->{safe_embargo_window}")
             
             # トレーニング期間の日付リストを作成
             train_dates = []
@@ -79,16 +103,20 @@ def generate_cpcv_folds(
             for train_fold_idx in train_fold_indices:
                 train_start, train_end = fold_periods[train_fold_idx]
                 
-                train_start_idx = dates.index(train_start)
-                train_end_idx = dates.index(train_end)
+                try:
+                    train_start_idx = dates.index(train_start)
+                    train_end_idx = dates.index(train_end)
+                except ValueError as e:
+                    print(f"警告: トレーニング期間の日付が見つかりません: {e}")
+                    continue
                 
                 # パージウィンドウ内の日付を除外
-                purge_start_idx = max(0, test_start_idx - purge_window)
-                purge_end_idx = min(len(dates) - 1, test_end_idx + purge_window)
+                purge_start_idx = max(0, test_start_idx - safe_purge_window)
+                purge_end_idx = min(len(dates) - 1, test_end_idx + safe_purge_window)
                 
                 # エンバーゴウィンドウ内の日付を除外
-                embargo_start_idx = max(0, purge_start_idx - embargo_window)
-                embargo_end_idx = min(len(dates) - 1, purge_end_idx + embargo_window)
+                embargo_start_idx = max(0, purge_start_idx - safe_embargo_window)
+                embargo_end_idx = min(len(dates) - 1, purge_end_idx + safe_embargo_window)
                 
                 # パージ・エンバーゴを適用したトレーニング期間
                 if embargo_start_idx <= train_start_idx and embargo_end_idx >= train_end_idx:
@@ -115,11 +143,19 @@ def generate_cpcv_folds(
             train_dates = sorted(list(set(train_dates)))
             test_dates = sorted(list(set(test_dates)))
             
+            # A2: データ数の確認を追加
+            if len(train_dates) < n_splits or len(test_dates) < 2:
+                print(f"警告: フォールド{test_fold_idx}のデータ数が不足しています (トレーニング: {len(train_dates)}, テスト: {len(test_dates)})")
+            
             # 有効なフォールドのみ追加（空のトレーニングやテストフォールドは回避）
             if train_dates and test_dates:
                 cpcv_folds.append((train_dates, test_dates))
             else:
                 print(f"警告: フォールド{test_fold_idx}が空のため、除外されました")
+        
+        # A2: 少なくとも1つのフォールドが有効かチェック
+        if not cpcv_folds:
+            print("エラー: 有効なCPCVフォールドが生成できませんでした。")
         
         return cpcv_folds
     
@@ -199,6 +235,11 @@ def run_cpcv_analysis(
                 },
                 'error': 'Closeカラムが見つかりません'
             }
+        
+        # A2: データサイズの確認を追加
+        if len(data) < 2 * n_splits:
+            print(f"警告: データポイント数({len(data)})が少なすぎます。フォールド数を調整します。")
+            n_splits = max(2, len(data) // 2)
             
         # デフォルト値の設定
         if purge_window is None:
@@ -261,6 +302,10 @@ def run_cpcv_analysis(
                         # 保有期間後の価格（取引日ベース）
                         # 保有期間後の日付がデータフレームの範囲を超える場合はスキップ
                         try:
+                            # A2: インデックスエラー回避の処理
+                            if day not in data.index:
+                                continue
+                                
                             day_idx = data.index.get_loc(day)
                             future_idx = day_idx + holding_period
                             
@@ -269,6 +314,11 @@ def run_cpcv_analysis(
                                 continue
                                 
                             future_date = data.index[future_idx]
+                            
+                            # future_dateがデータに存在するか確認
+                            if future_date not in data.index:
+                                continue
+                                
                             future_price = data.loc[future_date, 'Close']
                             
                             # リターンの計算
