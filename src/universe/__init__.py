@@ -17,9 +17,10 @@ def select_universe(base_list=None, target_count=50, clustering_method='optics')
     import json
     
     # クラスタリング手法に応じたモジュールをインポート
-    if clustering_method == 'optics':
-        from .optics_clustering import perform_clustering as clustering_func
-    else:  # 'tda' (デフォルト)
+    # 修正：すべてのクラスタリング手法を clustering.py に統合
+    if clustering_method == 'optics' or clustering_method == 'stable':
+        from .clustering import perform_clustering as clustering_func
+    else:  # 'tda' (後方互換性のため)
         from .clustering import tda_clustering as clustering_func
     
     # キャッシュから取得を試みる
