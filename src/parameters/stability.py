@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Dict, List, Any, Tuple
 import os
+from ..utils.param_utils import parse_param_key  # 共通ユーティリティからインポート
 
 def identify_stability_zones(
     grid_results: Dict,
@@ -98,42 +99,6 @@ def identify_stability_zones(
         'stable_params': stable_params_list,
         'heatmaps': heatmaps
     }
-
-def parse_param_key(param_key: str) -> Tuple[int, float, int, int, int, int]:
-    """パラメータキーからパラメータ値を抽出する
-    
-    Args:
-        param_key: パラメータキー（例："BB20-2.0_Stoch14-3_EMA200_Hold5"）
-        
-    Returns:
-        Tuple: (bb_window, bb_std, stoch_k, stoch_d, ema_period, holding_period)
-    """
-    try:
-        # BBパラメータ
-        bb_part = param_key.split('_')[0]
-        bb_values = bb_part.replace('BB', '').split('-')
-        bb_window = int(bb_values[0])
-        bb_std = float(bb_values[1])
-        
-        # Stochパラメータ
-        stoch_part = param_key.split('_')[1]
-        stoch_values = stoch_part.replace('Stoch', '').split('-')
-        stoch_k = int(stoch_values[0])
-        stoch_d = int(stoch_values[1])
-        
-        # EMAパラメータ
-        ema_part = param_key.split('_')[2]
-        ema_period = int(ema_part.replace('EMA', ''))
-        
-        # 保有期間
-        hold_part = param_key.split('_')[3]
-        holding_period = int(hold_part.replace('Hold', ''))
-        
-        return bb_window, bb_std, stoch_k, stoch_d, ema_period, holding_period
-    
-    except Exception as e:
-        print(f"パラメータキーの解析エラー ({param_key}): {str(e)}")
-        return 0, 0, 0, 0, 0, 0
 
 def generate_stability_heatmaps(
     param_df: pd.DataFrame,
