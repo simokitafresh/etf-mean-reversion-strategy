@@ -134,156 +134,174 @@ def run_walk_forward_analysis(
     
     for i, (train_dates, test_dates) in enumerate(windows):
         # トレーニングデータとテストデータの分割
-        train_data = data.loc[train_dates]
-        test_data = data.loc[test_dates]
-        
-        # テストデータ内のシグナル日
-        test_signal_days = test_data[test_data[signal_column]].index
-        
-        if len(test_signal_days) == 0:
-            print(f"  ウィンドウ{i+1}: テストデータにシグナルが含まれていません")
+        try:
+            train_data = data.loc[train_dates]
+            test_data = data.loc[test_dates]
             
-            # 資本曲線用に前回のエクイティを維持
-            if equity_curve:
-                last_equity = equity_curve[-1]['equity']
-                equity_curve.append({
-                    'window': i + 1,
-                    'date': test_dates[-1],
-                    'equity': last_equity
-                })
+            # テストデータ内のシグナル日
+            test_signal_days = test_data[test_data[signal_column]].index
             
-            continue
-        
-        # トレードリターンの計算
-        trade_returns = []
-        trade_dates = []
-        
-        for day in test_signal_days:
-            # 現在の価格
-            try:
-                current_price = test_data.loc[day, 'Close']
+            if len(test_signal_days) == 0:
+                print(f"  ウィンドウ{i+1}: テストデータにシグナルが含まれていません")
                 
-                # 保有期間後の価格（取引日ベース）
-                # 保有期間後の日付がデータフレームの範囲を超える場合はスキップ
-                future_idx = data.index.get_loc(day) + holding_period
-                if future_idx >= len(data):
-                    continue
+                # 資本曲線用に前回のエクイティを維持
+                if equity_curve:
+                    last_equity = equity_curve[-1]['equity']
+                    equity_curve.append({
+                        'window': i + 1,
+                        'date': test_dates[-1],
+                        'equity': last_equity
+                    })
+                
+                continue
+            
+            # トレードリターンの計算
+            trade_returns = []
+            trade_dates = []
+            
+            for day in test_signal_days:
+                # 現在の価格
+                try:
+                    if 'Close' not in test_data.columns:
+                        print(f"  エラー: 'Close'カラムがデータに存在しません")
+                        continue
+                        
+                    current_price = test_data.loc[day, 'Close']
                     
-                future_date = data.index[future_idx]
-                future_price = data.loc[future_date, 'Close']
-                
-                # リターンの計算
-                if signal_column == 'Buy_Signal':
-                    ret = (future_price / current_price) - 1
-                else:  # 'Sell_Signal'
-                    ret = (current_price / future_price) - 1
-                
-                trade_returns.append(ret)
-                trade_dates.append(day)
+                    # 保有期間後の価格（取引日ベース）
+                    # 保有期間後の日付がデータフレームの範囲を超える場合はスキップ
+                    try:
+                        day_idx = data.index.get_loc(day)
+                        future_idx = day_idx + holding_period
+                        
+                        # インデックス範囲チェック
+                        if future_idx >= len(data):
+                            continue
+                            
+                        future_date = data.index[future_idx]
+                        future_price = data.loc[future_date, 'Close']
+                        
+                        # リターンの計算
+                        if signal_column == 'Buy_Signal':
+                            ret = (future_price / current_price) - 1
+                        else:  # 'Sell_Signal'
+                            ret = (current_price / future_price) - 1
+                        
+                        trade_returns.append(ret)
+                        trade_dates.append(day)
+                    except KeyError as e:
+                        print(f"  警告: インデックスエラー ({day}) - {str(e)}")
+                        continue
+                    
+                except Exception as e:
+                    print(f"  評価エラー - {day}: {str(e)}")
+                    continue
             
-            except Exception as e:
-                print(f"  評価エラー - {day}: {str(e)}")
-        
-        # 有効なリターンがない場合
-        if not trade_returns:
-            print(f"  ウィンドウ{i+1}: 有効なリターンが計算できませんでした")
+            # 有効なリターンがない場合
+            if not trade_returns:
+                print(f"  ウィンドウ{i+1}: 有効なリターンが計算できませんでした")
+                
+                # 資本曲線用に前回のエクイティを維持
+                if equity_curve:
+                    last_equity = equity_curve[-1]['equity']
+                    equity_curve.append({
+                        'window': i + 1,
+                        'date': test_dates[-1],
+                        'equity': last_equity
+                    })
+                
+                continue
             
-            # 資本曲線用に前回のエクイティを維持
-            if equity_curve:
-                last_equity = equity_curve[-1]['equity']
+            # 統計値の計算
+            trade_returns = np.array(trade_returns)
+            is_win = trade_returns > 0
+            
+            win_rate = np.mean(is_win)
+            
+            # 勝ちトレードと負けトレードの合計
+            winning_trades = trade_returns[trade_returns > 0]
+            losing_trades = np.abs(trade_returns[trade_returns < 0])
+            
+            total_wins = winning_trades.sum() if len(winning_trades) > 0 else 0
+            total_losses = losing_trades.sum() if len(losing_trades) > 0 else 0
+            
+            # Profit Factor
+            profit_factor = (total_wins / total_losses) if total_losses > 0 else (
+                float('inf') if total_wins > 0 else 0
+            )
+            
+            # リターンの平均と標準偏差
+            avg_return = np.mean(trade_returns)
+            std_return = np.std(trade_returns)
+            
+            # シャープレシオ（リスクフリーレート0%と仮定）
+            sharpe_ratio = (avg_return / std_return) if std_return > 0 else 0
+            
+            # Wilson信頼区間（95%）
+            from scipy.stats import norm
+            
+            z = norm.ppf(0.975)  # 95%信頼区間
+            n = len(trade_returns)
+            
+            if n > 0:
+                wilson_lower = (win_rate + z*z/(2*n) - z * np.sqrt((win_rate*(1-win_rate) + z*z/(4*n))/n)) / (1 + z*z/n)
+            else:
+                wilson_lower = 0
+            
+            # 資本曲線の計算
+            if not equity_curve:
+                current_equity = initial_equity
+            else:
+                current_equity = equity_curve[-1]['equity']
+            
+            # 複利と仮定：(1 + r1) * (1 + r2) * ... * (1 + rn)
+            # 各トレードでポートフォリオの一定割合（例えば10%）を投資すると仮定
+            portfolio_fraction = 0.1  # 各トレードでポートフォリオの10%を投資
+            
+            # トレード結果を時系列順に処理
+            for trade_date, trade_return in zip(trade_dates, trade_returns):
+                # ポートフォリオへの影響を計算（複利）
+                current_equity *= (1 + (trade_return * portfolio_fraction))
+                
+                # 資本曲線に追加
                 equity_curve.append({
                     'window': i + 1,
-                    'date': test_dates[-1],
-                    'equity': last_equity
+                    'date': trade_date,
+                    'equity': current_equity
                 })
             
-            continue
-        
-        # 統計値の計算
-        trade_returns = np.array(trade_returns)
-        is_win = trade_returns > 0
-        
-        win_rate = np.mean(is_win)
-        
-        # 勝ちトレードと負けトレードの合計
-        winning_trades = trade_returns[trade_returns > 0]
-        losing_trades = np.abs(trade_returns[trade_returns < 0])
-        
-        total_wins = winning_trades.sum() if len(winning_trades) > 0 else 0
-        total_losses = losing_trades.sum() if len(losing_trades) > 0 else 0
-        
-        # Profit Factor
-        profit_factor = (total_wins / total_losses) if total_losses > 0 else (
-            float('inf') if total_wins > 0 else 0
-        )
-        
-        # リターンの平均と標準偏差
-        avg_return = np.mean(trade_returns)
-        std_return = np.std(trade_returns)
-        
-        # シャープレシオ（リスクフリーレート0%と仮定）
-        sharpe_ratio = (avg_return / std_return) if std_return > 0 else 0
-        
-        # Wilson信頼区間（95%）
-        from scipy.stats import norm
-        
-        z = norm.ppf(0.975)  # 95%信頼区間
-        n = len(trade_returns)
-        
-        if n > 0:
-            wilson_lower = (win_rate + z*z/(2*n) - z * np.sqrt((win_rate*(1-win_rate) + z*z/(4*n))/n)) / (1 + z*z/n)
-        else:
-            wilson_lower = 0
-        
-        # 資本曲線の計算
-        if not equity_curve:
-            current_equity = initial_equity
-        else:
-            current_equity = equity_curve[-1]['equity']
-        
-        # 複利と仮定：(1 + r1) * (1 + r2) * ... * (1 + rn)
-        # 各トレードでポートフォリオの一定割合（例えば10%）を投資すると仮定
-        portfolio_fraction = 0.1  # 各トレードでポートフォリオの10%を投資
-        
-        # トレード結果を時系列順に処理
-        for trade_date, trade_return in zip(trade_dates, trade_returns):
-            # ポートフォリオへの影響を計算（複利）
-            current_equity *= (1 + (trade_return * portfolio_fraction))
-            
-            # 資本曲線に追加
+            # 最後のエクイティ値を使用して最終日を追加
             equity_curve.append({
                 'window': i + 1,
-                'date': trade_date,
+                'date': test_dates[-1],
                 'equity': current_equity
             })
+            
+            window_result = {
+                'window': i + 1,
+                'train_size': len(train_data),
+                'test_size': len(test_data),
+                'signal_count': len(test_signal_days),
+                'valid_trades': len(trade_returns),
+                'win_rate': float(win_rate),
+                'profit_factor': float(profit_factor),
+                'avg_return': float(avg_return),
+                'std_return': float(std_return),
+                'sharpe_ratio': float(sharpe_ratio),
+                'wilson_lower': float(wilson_lower),
+                'training_period': f"{train_dates[0]} to {train_dates[-1]}",
+                'test_period': f"{test_dates[0]} to {test_dates[-1]}",
+                'window_return': float(current_equity / initial_equity - 1)
+            }
+            
+            window_results.append(window_result)
+            
+            print(f"  ウィンドウ{i+1}: 勝率 = {win_rate:.1%}, PF = {profit_factor:.2f}, 信頼下限 = {wilson_lower:.1%}, リターン = {window_result['window_return']:.1%}")
         
-        # 最後のエクイティ値を使用して最終日を追加
-        equity_curve.append({
-            'window': i + 1,
-            'date': test_dates[-1],
-            'equity': current_equity
-        })
-        
-        window_result = {
-            'window': i + 1,
-            'train_size': len(train_data),
-            'test_size': len(test_data),
-            'signal_count': len(test_signal_days),
-            'valid_trades': len(trade_returns),
-            'win_rate': float(win_rate),
-            'profit_factor': float(profit_factor),
-            'avg_return': float(avg_return),
-            'std_return': float(std_return),
-            'sharpe_ratio': float(sharpe_ratio),
-            'wilson_lower': float(wilson_lower),
-            'training_period': f"{train_dates[0]} to {train_dates[-1]}",
-            'test_period': f"{test_dates[0]} to {test_dates[-1]}",
-            'window_return': float(current_equity / initial_equity - 1)
-        }
-        
-        window_results.append(window_result)
-        
-        print(f"  ウィンドウ{i+1}: 勝率 = {win_rate:.1%}, PF = {profit_factor:.2f}, 信頼下限 = {wilson_lower:.1%}, リターン = {window_result['window_return']:.1%}")
+        except Exception as e:
+            print(f"  ウィンドウ{i+1}の処理中にエラーが発生しました: {str(e)}")
+            # エラーが発生しても処理を継続
+            continue
     
     # 全体の統計値
     if window_results:
@@ -397,35 +415,38 @@ def visualize_walk_forward_results(
     
     # 2. 資本曲線（エクイティカーブ）
     if results['equity_curve']:
-        equity_df = pd.DataFrame(results['equity_curve'])
-        equity_df['date'] = pd.to_datetime(equity_df['date'])
-        equity_df = equity_df.sort_values('date')
-        
-        plt.figure(figsize=(14, 7))
-        plt.plot(equity_df['date'], equity_df['equity'], 'b-', linewidth=1.5)
-        
-        # ウィンドウごとに色を変えて描画
-        for window in equity_df['window'].unique():
-            window_data = equity_df[equity_df['window'] == window]
-            plt.plot(window_data['date'], window_data['equity'], marker='o', markersize=3, linestyle='-', label=f'ウィンドウ{window}')
-        
-        plt.title(f"{symbol} - {signal_type}のエクイティカーブ")
-        plt.ylabel('資本')
-        plt.xlabel('日付')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        
-        # 日付フォーマットの設定
-        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-        plt.gca().xaxis.set_major_locator(mdates.YearLocator())
-        plt.xticks(rotation=45)
-        
-        plt.tight_layout()
-        
-        equity_path = f"{output_dir}/{symbol}_{signal_type}_equity_curve.png"
-        plt.savefig(equity_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        visualization_paths['equity_curve'] = equity_path
+        try:
+            equity_df = pd.DataFrame(results['equity_curve'])
+            equity_df['date'] = pd.to_datetime(equity_df['date'])
+            equity_df = equity_df.sort_values('date')
+            
+            plt.figure(figsize=(14, 7))
+            plt.plot(equity_df['date'], equity_df['equity'], 'b-', linewidth=1.5)
+            
+            # ウィンドウごとに色を変えて描画
+            for window in equity_df['window'].unique():
+                window_data = equity_df[equity_df['window'] == window]
+                plt.plot(window_data['date'], window_data['equity'], marker='o', markersize=3, linestyle='-', label=f'ウィンドウ{window}')
+            
+            plt.title(f"{symbol} - {signal_type}のエクイティカーブ")
+            plt.ylabel('資本')
+            plt.xlabel('日付')
+            plt.grid(True, alpha=0.3)
+            plt.legend()
+            
+            # 日付フォーマットの設定
+            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+            plt.gca().xaxis.set_major_locator(mdates.YearLocator())
+            plt.xticks(rotation=45)
+            
+            plt.tight_layout()
+            
+            equity_path = f"{output_dir}/{symbol}_{signal_type}_equity_curve.png"
+            plt.savefig(equity_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            visualization_paths['equity_curve'] = equity_path
+        except Exception as e:
+            print(f"エクイティカーブの可視化中にエラーが発生しました: {str(e)}")
     
     return visualization_paths
