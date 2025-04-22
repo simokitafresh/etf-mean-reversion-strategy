@@ -123,7 +123,7 @@ def calculate_all_indicators(
         pd.DataFrame: 指標を追加したデータフレーム
     """
     # 入力確認
-    required_columns = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
+    required_columns = ['Open', 'High', 'Low', 'Close',  'Volume']
     for col in required_columns:
         if col not in data.columns:
             raise ValueError(f"入力データには '{col}' 列が必要です")
@@ -133,7 +133,7 @@ def calculate_all_indicators(
     
     # ボリンジャーバンドの計算
     bb = calculate_bollinger_bands(
-        result['Adj Close'], 
+        result['Close'], 
         window=bb_window, 
         num_std=bb_std
     )
@@ -157,7 +157,7 @@ def calculate_all_indicators(
     
     # EMAと傾きの計算
     ema = calculate_ema_slope(
-        result['Adj Close'], 
+        result['Close'], 
         period=ema_period, 
         slope_period=ema_slope_period
     )
@@ -166,6 +166,6 @@ def calculate_all_indicators(
     result['EMA200_Slope'] = ema['slope']
     
     # 価格位置（EMAに対する相対位置）を追加
-    result['Price_Rel_EMA'] = (result['Adj Close'] / result['EMA200'] - 1) * 100
+    result['Price_Rel_EMA'] = (result['Close'] / result['EMA200'] - 1) * 100
     
     return result
