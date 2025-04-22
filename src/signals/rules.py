@@ -83,40 +83,70 @@ def generate_signals(
     result['Buy_Signal'] = (result['Trend'] == 1) & result['Buy_Overshoot']
     result['Sell_Signal'] = (result['Trend'] == -1) & result['Sell_Overshoot']
     
-    # シグナル数が最小サンプル数を下回る場合は無効化
-    if result['Buy_Signal'].sum() < min_samples:
-        result['Buy_Signal'] = False
-        print(f"警告: 買いシグナルのサンプル数({result['Buy_Signal'].sum()})が最小数({min_samples})を下回るため無効化しました")
+    # オリジナルのシグナル数を保存
+    buy_signal_count = result['Buy_Signal'].sum()
+    sell_signal_count = result['Sell_Signal'].sum()
     
-    if result['Sell_Signal'].sum() < min_samples:
-        result['Sell_Signal'] = False
-        print(f"警告: 売りシグナルのサンプル数({result['Sell_Signal'].sum()})が最小数({min_samples})を下回るため無効化しました")
+    # シグナル数が最小サンプル数を下回る場合は無効化フラグを設定
+    buy_signals_valid = buy_signal_count >= min_samples
+    sell_signals_valid = sell_signal_count >= min_samples
+    
+    # 無効な場合は警告を表示
+    if not buy_signals_valid:
+        print(f"警告: 買いシグナルのサンプル数({buy_signal_count})が最小数({min_samples})を下回るため無効フラグを設定しました")
+    
+    if not sell_signals_valid:
+        print(f"警告: 売りシグナルのサンプル数({sell_signal_count})が最小数({min_samples})を下回るため無効フラグを設定しました")
+    
+    # 有効性フラグを追加
+    result['Buy_Signal_Valid'] = buy_signals_valid
+    result['Sell_Signal_Valid'] = sell_signals_valid
     
     # シグナル強度スコアの計算
     # Bollingerバンド逸脱度 + Stochastic極値度を数値化
     result['Buy_Signal_Strength'] = 0.0
     result['Sell_Signal_Strength'] = 0.0
     
-    # 買いシグナル強度
+    # 買いシグナル強度 - シグナルが存在する場合のみ計算
     buy_mask = result['Buy_Signal']
     if buy_mask.any():
-        # Bollingerバンド逸脱度（0〜1のスケール）
-        bb_deviation = (result['BB_Lower'] - result['Close']) / result['BB_Lower']
-        # Stochastic極値度（0〜1のスケール、20に近いほど0に近づく）
-        stoch_extremity = (20 - result['Stoch_K']) / 20
-        
-        # 正規化して合成（両方とも0〜1のスケール）
-        result.loc[buy_mask, 'Buy_Signal_Strength'] = 0.7 * bb_deviation[buy_mask] + 0.3 * stoch_extremity[buy_mask]
+        try:
+            # Bollingerバンド逸脱度（0〜1のスケール）
+            bb_deviation = (result['BB_Lower'] - result['Close']) / result['BB_Lower']
+            # 0以上の値に制限（割り算の結果がマイナスになる可能性があるため）
+            bb_deviation = bb_deviation.clip(0, None)
+            
+            # Stochastic極値度（0〜1のスケール、20に近いほど0に近づく）
+            stoch_extremity = ((20 - result['Stoch_K']) / 20).clip(0, 1)
+            
+            # 正規化して合成（両方とも0〜1のスケール）
+            # NaNが発生する可能性があるため、fillnaで対処
+            result.loc[buy_mask, 'Buy_Signal_Strength'] = (
+                0.7 * bb_deviation.loc[buy_mask].fillna(0) + 
+                0.3 * stoch_extremity.loc[buy_mask].fillna(0)
+            )
+        except Exception as e:
+            print(f"買いシグナル強度の計算中にエラーが発生しました: {str(e)}")
     
-    # 売りシグナル強度
+    # 売りシグナル強度 - シグナルが存在する場合のみ計算
     sell_mask = result['Sell_Signal']
     if sell_mask.any():
-        # Bollingerバンド逸脱度（0〜1のスケール）
-        bb_deviation = (result['Close'] - result['BB_Upper']) / result['BB_Upper']
-        # Stochastic極値度（0〜1のスケール、80に近いほど0に近づく）
-        stoch_extremity = (result['Stoch_K'] - 80) / 20
-        
-        # 正規化して合成（両方とも0〜1のスケール）
-        result.loc[sell_mask, 'Sell_Signal_Strength'] = 0.7 * bb_deviation[sell_mask] + 0.3 * stoch_extremity[sell_mask]
+        try:
+            # Bollingerバンド逸脱度（0〜1のスケール）
+            bb_deviation = (result['Close'] - result['BB_Upper']) / result['BB_Upper']
+            # 0以上の値に制限
+            bb_deviation = bb_deviation.clip(0, None)
+            
+            # Stochastic極値度（0〜1のスケール、80に近いほど0に近づく）
+            stoch_extremity = ((result['Stoch_K'] - 80) / 20).clip(0, 1)
+            
+            # 正規化して合成（両方とも0〜1のスケール）
+            # NaNが発生する可能性があるため、fillnaで対処
+            result.loc[sell_mask, 'Sell_Signal_Strength'] = (
+                0.7 * bb_deviation.loc[sell_mask].fillna(0) + 
+                0.3 * stoch_extremity.loc[sell_mask].fillna(0)
+            )
+        except Exception as e:
+            print(f"売りシグナル強度の計算中にエラーが発生しました: {str(e)}")
     
     return result
