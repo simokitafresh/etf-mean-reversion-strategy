@@ -79,7 +79,7 @@ class TDAOPTICSClusterer(BaseClusterer):
         valid_returns = returns_df[valid_symbols]
         
         # 1. TDAクラスタリング - マクロ構造の把握
-        tda_clusters, tda_graph = self._perform_tda_clustering(valid_returns.values)
+        tda_clusters, tda_graph = self._perform_tda_clustering(valid_returns.values, valid_symbols)
         
         # 2. TDA結果の可視化（オプション）
         try:
@@ -160,11 +160,12 @@ class TDAOPTICSClusterer(BaseClusterer):
         print(f"TDA+OPTICSクラスタリング完了: {len(selected_etfs)}銘柄を選択")
         return selected_etfs
     
-    def _perform_tda_clustering(self, returns_data: np.ndarray) -> Tuple[List[List[str]], Dict]:
+    def _perform_tda_clustering(self, returns_data: np.ndarray, valid_symbols: List[str]) -> Tuple[List[List[str]], Dict]:
         """TDAクラスタリングを実行
         
         Args:
             returns_data: リターンデータの配列
+            valid_symbols: 有効なETFシンボルのリスト
             
         Returns:
             Tuple[List[List[str]], Dict]: クラスタのリストとMapperグラフ
