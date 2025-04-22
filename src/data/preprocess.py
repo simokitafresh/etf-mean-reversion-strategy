@@ -4,10 +4,20 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import time
-from ..data.cache import DataCache
+import logging  # 追加: ロギング用
 
-# キャッシュのインスタンス化
-cache = DataCache()
+# ロガーの設定
+logger = logging.getLogger(__name__)
+
+# キャッシュのインスタンス化 - エラー処理強化
+try:
+    from ..data.cache import DataCache
+    cache = DataCache()
+    cache_available = True
+except Exception as e:
+    logger.warning(f"キャッシュ初期化エラー: {str(e)}")
+    logger.info("キャッシュなしで続行します")
+    cache_available = False
 
 def data_quality_check(selected_etfs):
     """ETFデータの品質を確認し、基準を満たす銘柄だけを残す
@@ -18,12 +28,17 @@ def data_quality_check(selected_etfs):
     Returns:
         list: 品質チェックを通過したETFのリスト
     """
-    # キャッシュから取得を試みる
-    cache_key = f"quality_checked_etfs_{len(selected_etfs)}"
-    cached_data = cache.get_json(cache_key)
-    if cached_data:
-        print("キャッシュからデータ品質確認結果を取得しました")
-        return cached_data
+    # キャッシュから取得を試みる - エラー処理強化
+    if cache_available:
+        cache_key = f"quality_checked_etfs_{len(selected_etfs)}"
+        try:
+            cached_data = cache.get_json(cache_key)
+            if cached_data:
+                print("キャッシュからデータ品質確認結果を取得しました")
+                return cached_data
+        except Exception as e:
+            logger.warning(f"キャッシュ読み込みエラー: {str(e)}")
+            logger.info("キャッシュ読み込みに失敗しました。データを再計算します。")
     
     print("データ品質確認を開始します...")
     
@@ -107,7 +122,11 @@ def data_quality_check(selected_etfs):
     
     print(f"データ品質確認完了: {len(final_etfs)}/{len(selected_etfs)}銘柄が通過")
     
-    # キャッシュに保存
-    cache.set_json(cache_key, final_etfs)
+    # キャッシュに保存 - エラー処理強化
+    if cache_available:
+        try:
+            cache.set_json(cache_key, final_etfs)
+        except Exception as e:
+            logger.warning(f"キャッシュ保存エラー: {str(e)}")
     
     return final_etfs
