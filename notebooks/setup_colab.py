@@ -85,7 +85,8 @@ def setup_colab(project_name="etf-mean-reversion-strategy", force_clone=False, u
         "data/results",
         "data/results/signals",
         "data/results/parameters",
-        "data/results/validation"
+        "data/results/validation",
+        "data/logs"  # ログ用ディレクトリを追加
     ]
     
     for data_dir in data_dirs:
@@ -93,7 +94,7 @@ def setup_colab(project_name="etf-mean-reversion-strategy", force_clone=False, u
     
     print("✅ データディレクトリ構造を作成しました")
     
-    # 必要なライブラリをインストール
+    # 必要なライブラリをインストール - 特定バージョンを指定
     print("📦 必要なライブラリをインストールしています...")
     
     try:
@@ -103,8 +104,9 @@ def setup_colab(project_name="etf-mean-reversion-strategy", force_clone=False, u
             print("✅ 依存ライブラリのインストール成功")
         else:
             print("⚠️ requirements.txtが見つかりません。代わりに主要ライブラリを個別にインストールします")
-            subprocess.run("pip install -q pandas numpy matplotlib seaborn yfinance ta scikit-learn", shell=True, check=True)
-            subprocess.run("pip install -q umap-learn==0.5.5 hdbscan==0.8.33", shell=True, check=True)
+            # umap-learnとhdbscanを含まない必須ライブラリのみをインストール
+            subprocess.run("pip install -q pandas>=1.3.0,<2.0.0 numpy>=1.20.0,<2.0.0 scikit-learn>=1.0.0,<2.0.0 matplotlib>=3.4.0,<3.8.0 seaborn>=0.11.2,<0.13.0 yfinance>=0.1.70,<0.2.0 ta>=0.10.0,<0.11.0", 
+                         shell=True, check=True)
             print("✅ 主要ライブラリのインストール成功")
     except subprocess.CalledProcessError as e:
         print(f"⚠️ 一部のライブラリインストールに失敗しました: {str(e)}")
@@ -138,40 +140,80 @@ def get_sample_etfs():
 ''')
         print(f"✅ サンプルETFリストを作成しました: {sample_etfs_path}")
     
-    # メモリ使用量モニタリングヘルパー関数
+    # メモリ使用量モニタリングヘルパー関数のインポート
     print("🔄 メモリ使用量モニタリング機能を設定しています...")
     
     try:
-        # メモリ使用量を表示する関数を定義
-        def display_memory_usage():
-            import psutil
-            from IPython.display import display, HTML
+        # モニタリングモジュールが存在するか確認
+        monitoring_path = os.path.join(project_path, "src", "utils", "monitoring.py")
+        if not os.path.exists(monitoring_path):
+            # utilsディレクトリの確認
+            utils_dir = os.path.join(project_path, "src", "utils")
+            if not os.path.exists(utils_dir):
+                os.makedirs(utils_dir, exist_ok=True)
             
-            # 現在のプロセスのメモリ使用量を取得
-            process = psutil.Process(os.getpid())
-            memory_info = process.memory_info()
-            memory_usage_gb = memory_info.rss / (1024 ** 3)  # GB単位に変換
-            
-            # メモリ使用状況を表示
-            memory_status = "正常" if memory_usage_gb < 10 else "警告" if memory_usage_gb < 12 else "危険"
-            color = "green" if memory_usage_gb < 10 else "orange" if memory_usage_gb < 12 else "red"
-            
-            html = f"""
-            <div style="margin:10px; padding:10px; border-radius:10px; border:1px solid #ddd;">
-                <h3 style="margin-top:0; color:{color};">メモリ使用状況: {memory_status}</h3>
-                <p>現在のメモリ使用量: <b>{memory_usage_gb:.2f} GB</b></p>
-                <p>Colabの制限: 約12-13 GB</p>
-            </div>
-            """
-            
-            display(HTML(html))
-            
-            return memory_usage_gb
+            # monitoringモジュールを作成
+            with open(monitoring_path, 'w') as f:
+                f.write('''"""メモリ使用量モニタリング機能"""
+import os
+import psutil
+from IPython.display import display, HTML
+
+def display_memory_usage():
+    """現在のメモリ使用量を表示する"""
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        memory_usage_gb = memory_info.rss / (1024 ** 3)  # GB単位に変換
         
-        # グローバルに関数を利用できるようにする
+        # メモリ使用状況を表示
+        memory_status = "正常" if memory_usage_gb < 10 else "警告" if memory_usage_gb < 12 else "危険"
+        color = "green" if memory_usage_gb < 10 else "orange" if memory_usage_gb < 12 else "red"
+        
+        html = f"""
+        <div style="margin:10px; padding:10px; border-radius:10px; border:1px solid #ddd;">
+            <h3 style="margin-top:0; color:{color};">メモリ使用状況: {memory_status}</h3>
+            <p>現在のメモリ使用量: <b>{memory_usage_gb:.2f} GB</b></p>
+            <p>Colabの制限: 約12-13 GB</p>
+        </div>
+        """
+        
+        display(HTML(html))
+        
+        return memory_usage_gb
+    except Exception as e:
+        print(f"⚠️ メモリ使用量の確認ができません: {str(e)}")
+        return None
+
+def check_memory(checkpoint_name=""):
+    """メモリ使用量をチェックして値を返す"""
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        memory_usage_gb = memory_info.rss / (1024 ** 3)  # GB単位に変換
+        
+        if checkpoint_name:
+            print(f"{checkpoint_name}: {memory_usage_gb:.2f} GB")
+        
+        return memory_usage_gb
+    except Exception as e:
+        print(f"⚠️ メモリ使用量の確認に失敗: {str(e)}")
+        return None
+''')
+            print("✅ メモリモニタリングモジュールを作成しました")
+        
+        # グローバルにメモリ使用量モニタリング関数を提供
+        from src.utils.monitoring import display_memory_usage, check_memory
         globals()['display_memory_usage'] = display_memory_usage
+        globals()['check_memory'] = check_memory
         
-        print("✅ メモリ使用量モニタリング機能を設定しました。`display_memory_usage()`を呼び出すとメモリ状況が表示されます")
+        print("✅ メモリ使用量モニタリング機能をセットアップしました")
+        
+        # 現在のメモリ使用量を表示
+        display_memory_usage()
+        
     except Exception as e:
         print(f"⚠️ メモリモニタリング機能の設定に失敗しました: {str(e)}")
     
