@@ -1,18 +1,29 @@
+# src/universe/__init__.py
 """ETFユニバース選定モジュール"""
 import os
 import pandas as pd
 import json
 import warnings
+import logging  # 追加: ロギング用
 from typing import List, Dict, Any, Optional, Callable
+
+# ロガーの設定
+logger = logging.getLogger(__name__)
 
 # 一貫した絶対インポートの使用
 from src.universe.liquidity import screen_liquidity
 from src.universe.correlation import correlation_filtering
 from src.data.preprocess import data_quality_check
-from src.data.cache import DataCache
 
-# キャッシュのグローバルインスタンス
-cache = DataCache()
+# キャッシュのグローバルインスタンス - エラー処理強化
+try:
+    from src.data.cache import DataCache
+    cache = DataCache()
+    cache_available = True
+except Exception as e:
+    logger.warning(f"キャッシュ初期化エラー: {str(e)}")
+    logger.info("キャッシュなしで続行します")
+    cache_available = False
 
 def select_universe(
     base_list: Optional[List[Dict[str, Any]]] = None, 
@@ -34,12 +45,16 @@ def select_universe(
     # クラスタリング手法に応じたモジュールをインポート
     from src.universe.clustering import cluster_etfs
     
-    # キャッシュから取得を試みる
-    cache_key = f"final_etf_universe_{target_count}_{clustering_method}"
-    cached_data = cache.get_json(cache_key)
-    if cached_data:
-        print(f"キャッシュから最終ETFユニバース({clustering_method})を取得しました")
-        return cached_data
+    # キャッシュから取得を試みる - エラー処理強化
+    if cache_available:
+        cache_key = f"final_etf_universe_{target_count}_{clustering_method}"
+        try:
+            cached_data = cache.get_json(cache_key)
+            if cached_data:
+                logger.info(f"キャッシュから最終ETFユニバース({clustering_method})を取得しました")
+                return cached_data
+        except Exception as e:
+            logger.warning(f"キャッシュ読み込みエラー: {str(e)}")
     
     # 結果ディレクトリの作成
     os.makedirs("data/results", exist_ok=True)
@@ -142,12 +157,16 @@ def select_universe(
             for i, etf in enumerate(final_etfs[:min(10, len(final_etfs))]):
                 symbol = etf.get('symbol', 'N/A')
                 name = etf.get('name', 'N/A')
-                print(f"  {i+1}. {symbol}: {name}")
+                print(f"  • {i+1}. {symbol}: {name} ({etf.get('category', 'N/A')})")
             
             if len(final_etfs) > 10:
                 print(f"  ... 他 {len(final_etfs) - 10} 銘柄")
     
-    # キャッシュに保存
-    cache.set_json(cache_key, final_etfs)
+    # キャッシュに保存 - エラー処理強化
+    if cache_available:
+        try:
+            cache.set_json(cache_key, final_etfs)
+        except Exception as e:
+            logger.warning(f"キャッシュ保存エラー: {str(e)}")
     
     return final_etfs
