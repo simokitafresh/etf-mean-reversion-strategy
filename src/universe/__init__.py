@@ -1,17 +1,15 @@
-# src/universe/__init__.py を更新
 """ETFユニバース選定モジュール"""
 from .liquidity import screen_liquidity
 from .correlation import correlation_filtering
 from ..data.preprocess import data_quality_check
 
-# src/universe/__init__.py の更新部分
-def select_universe(base_list=None, target_count=50, clustering_method='stable'):
+def select_universe(base_list=None, target_count=50, clustering_method='optics'):
     """ETFユニバースを選定する統合関数
     
     Args:
         base_list: 基礎ETFリスト。Noneの場合は自動取得
         target_count: 目標ETF数
-        clustering_method: クラスタリング手法。'stable'または'tda'
+        clustering_method: クラスタリング手法。'optics'または'tda'
     """
     from ..data.fetch import get_base_etf_list
     import os
@@ -19,8 +17,8 @@ def select_universe(base_list=None, target_count=50, clustering_method='stable')
     import json
     
     # クラスタリング手法に応じたモジュールをインポート
-    if clustering_method == 'stable':
-        from .stable_clustering import perform_clustering as clustering_func
+    if clustering_method == 'optics':
+        from .optics_clustering import perform_clustering as clustering_func
     else:  # 'tda' (デフォルト)
         from .clustering import tda_clustering as clustering_func
     
@@ -42,12 +40,10 @@ def select_universe(base_list=None, target_count=50, clustering_method='stable')
     print(f"  基礎候補リスト: {len(base_list)}銘柄")
     
     print("ステップ2: 流動性スクリーニング中...")
-    from .liquidity import screen_liquidity
     liquid_etfs = screen_liquidity(base_list)
     print(f"  流動性条件通過: {len(liquid_etfs)}銘柄")
     
     print("ステップ3: 相関フィルタリング中...")
-    from .correlation import correlation_filtering
     filtered_etfs = correlation_filtering(liquid_etfs, target_count)
     print(f"  相関フィルタ通過: {len(filtered_etfs)}銘柄")
     
@@ -56,7 +52,6 @@ def select_universe(base_list=None, target_count=50, clustering_method='stable')
     print(f"  クラスタリング後: {len(clustered_etfs)}銘柄")
     
     print("ステップ5: データ品質確認...")
-    from ..data.preprocess import data_quality_check
     final_etfs = data_quality_check(clustered_etfs)
     print(f"  最終ETFユニバース: {len(final_etfs)}銘柄")
     
