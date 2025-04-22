@@ -16,14 +16,14 @@ cache = DataCache()
 def select_universe(
     base_list: Optional[List[Dict[str, Any]]] = None, 
     target_count: int = 50, 
-    clustering_method: str = 'tda'
+    clustering_method: str = 'tda_optics'
 ) -> List[Dict[str, Any]]:
     """ETFユニバースを選定する統合関数
     
     Args:
         base_list: 基礎ETFリスト。Noneの場合は自動取得
         target_count: 目標ETF数
-        clustering_method: クラスタリング手法（'tda', 'optics', 'tsne_optics', 'pca_optics'）
+        clustering_method: クラスタリング手法（'tda', 'optics', 'tsne_optics', 'pca_optics', 'tda_optics'）
         
     Returns:
         List[Dict[str, Any]]: 選定されたETFユニバース
@@ -31,16 +31,7 @@ def select_universe(
     from ..data.fetch import get_base_etf_list
     
     # クラスタリング手法に応じたモジュールをインポート
-    from .clustering import perform_clustering, tda_clustering
-    
-    # 互換性のための処理
-    if clustering_method == 'tda':
-        clustering_func = tda_clustering
-    elif clustering_method in ['optics', 'pca_optics', 'tsne_optics']:
-        clustering_func = lambda etfs, **kwargs: perform_clustering(etfs, method=clustering_method, **kwargs)
-    else:
-        print(f"警告: 不明なクラスタリング手法 '{clustering_method}'。'tda'を使用します。")
-        clustering_func = tda_clustering
+    from .clustering import cluster_etfs
     
     # キャッシュから取得を試みる
     cache_key = f"final_etf_universe_{target_count}_{clustering_method}"
@@ -98,7 +89,8 @@ def select_universe(
     
     print(f"ステップ4: 構造的分散確保（{clustering_method.upper()}アプローチ）...")
     try:
-        clustered_etfs = clustering_func(filtered_etfs)
+        # 新しいクラスタリングアーキテクチャを使用
+        clustered_etfs = cluster_etfs(filtered_etfs, method=clustering_method)
         print(f"  クラスタリング後: {len(clustered_etfs)}銘柄")
     except Exception as e:
         print(f"エラー: クラスタリングに失敗しました: {str(e)}")
