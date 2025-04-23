@@ -4,9 +4,13 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Dict, List, Any, Tuple
+import logging
 import os
-from ..utils.param_utils import parse_param_key  # 共通ユーティリティからインポート
+from typing import Dict, List, Any, Tuple, Callable, Optional
+from src.utils.param_utils import parse_param_key  # 共通ユーティリティからインポート
+
+# ロガーの設定
+logger = logging.getLogger(__name__)
 
 def identify_stability_zones(
     grid_results: Dict,
@@ -30,7 +34,7 @@ def identify_stability_zones(
     # 結果ディレクトリの作成
     os.makedirs("data/results/stability", exist_ok=True)
     
-    print(f"{direction}方向の安定帯を特定しています...")
+    logger.info(f"{direction}方向の安定帯を特定しています...")
     
     # パラメータサマリーを取得
     param_summary = grid_results['summary']['parameter_performance']
@@ -68,7 +72,7 @@ def identify_stability_zones(
     param_df = pd.DataFrame(param_data)
     
     if len(param_df) == 0:
-        print(f"警告: {direction}方向の有効なパラメータデータがありません")
+        logger.warning(f"警告: {direction}方向の有効なパラメータデータがありません")
         return {
             'stable_params': [],
             'heatmaps': {}
@@ -84,7 +88,7 @@ def identify_stability_zones(
         (param_df['stability'] <= stab_threshold)
     ]
     
-    print(f"安定帯に属するパラメータ: {len(stable_params)}/{len(param_df)}セット")
+    logger.info(f"安定帯に属するパラメータ: {len(stable_params)}/{len(param_df)}セット")
     
     # ヒートマップの生成
     heatmaps = generate_stability_heatmaps(param_df, stable_params, direction)
@@ -220,6 +224,64 @@ def generate_2d_heatmap(
     plt.savefig(filepath, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"ヒートマップを保存しました: {filepath}")
+    logger.info(f"ヒートマップを保存しました: {filepath}")
     
     return filepath
+
+# 新しい関数: 依存性注入を使用したパラメータ安定性評価
+def evaluate_parameter_stability(
+    grid_results: Dict,
+    param_analyzer_func: Optional[Callable] = None,
+    directions: List[str] = ['buy', 'sell'],
+    metrics: Dict[str, str] = None
+) -> Dict[str, Any]:
+    """パラメータの安定性を評価する（依存性注入パターン）
+    
+    Args:
+        grid_results: グリッドサーチ結果
+        param_analyzer_func: パラメータ分析関数（カスタム分析のためのオプショナル）
+        directions: 評価する取引方向
+        metrics: 使用するメトリクス（デフォルト: {'performance': 'avg_win_rate', 'stability': 'std_win_rate'}）
+        
+    Returns:
+        Dict: 評価結果
+    """
+    # デフォルトメトリクス
+    if metrics is None:
+        metrics = {
+            'performance': 'avg_win_rate', 
+            'stability': 'std_win_rate'
+        }
+    
+    # デフォルトの分析関数
+    if param_analyzer_func is None:
+        param_analyzer_func = identify_stability_zones
+    
+    results = {}
+    
+    # 各取引方向で評価
+    for direction in directions:
+        logger.info(f"{direction}方向のパラメータ評価を実行します...")
+        
+        direction_result = param_analyzer_func(
+            grid_results=grid_results,
+            performance_metric=metrics['performance'],
+            stability_metric=metrics['stability'],
+            direction=direction
+        )
+        
+        results[direction] = direction_result
+    
+    # 全体サマリー
+    summary = {
+        'total_parameters': len(grid_results.get('summary', {}).get('parameter_performance', {})),
+        'stable_parameters': {
+            direction: len(results[direction]['stable_params']) 
+            for direction in directions
+        },
+        'stability_threshold': 0.75  # デフォルト閾値
+    }
+    
+    results['summary'] = summary
+    
+    return results
