@@ -6,15 +6,21 @@ import os
 import time
 import yfinance as yf
 import warnings
+import logging
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Tuple
 
 # 絶対インポートの使用（プロジェクト内の別パッケージへの参照）
-from src.data.cache import DataCache
+from src.data.cache_manager import CacheManager
+
+# ロガーの設定
+logger = logging.getLogger(__name__)
 
 # 再現性のためのランダムシード
 RANDOM_SEED = 42
-cache = DataCache()
+
+# キャッシュマネージャーのインスタンスを取得
+cache_manager = CacheManager.get_instance()
 
 class BaseClusterer(ABC):
     """クラスタリング基底クラス"""
@@ -43,14 +49,14 @@ class BaseClusterer(ABC):
             List[Dict[str, Any]]: 選択されたETFのリスト
         """
         if not etfs:
-            warnings.warn("ETFリストが空です")
+            logger.warning("ETFリストが空です")
             return []
         
         # キャッシュキーの生成
         cache_key = self._generate_cache_key(etfs)
-        cached_data = cache.get_json(cache_key)
+        cached_data = cache_manager.get_json(cache_key)
         if cached_data:
-            print(f"キャッシュから{self.name}クラスタリング結果を取得しました")
+            logger.info(f"キャッシュから{self.name}クラスタリング結果を取得しました")
             return cached_data
         
         # シンボルリストの取得
@@ -61,14 +67,14 @@ class BaseClusterer(ABC):
         returns_df = self.get_returns_data(symbols)
         
         if returns_df.empty:
-            warnings.warn("リターンデータが取得できませんでした")
+            logger.warning("リターンデータが取得できませんでした")
             return etfs
         
         # 実際のクラスタリングを実行（サブクラスで実装）
         selected_etfs = self.perform_clustering(etfs, returns_df)
         
         # 結果をキャッシュに保存
-        cache.set_json(cache_key, selected_etfs)
+        cache_manager.set_json(cache_key, selected_etfs)
         
         return selected_etfs
     
@@ -95,14 +101,19 @@ class BaseClusterer(ABC):
         Returns:
             pd.DataFrame: 日次対数リターンデータを含むデータフレーム
         """
+        # シンボルリストの検証
+        if not symbols:
+            logger.warning("シンボルリストが空です")
+            return pd.DataFrame()
+            
         # キャッシュから取得を試みる
-        cache_key = f"returns_data_{'-'.join(sorted(symbols))}_{period}"
-        cached_data = cache.get_json(cache_key)
+        cache_key = f"returns_data_{'-'.join(sorted(symbols[:5]))}_{len(symbols)}_{period}"
+        cached_data = cache_manager.get_json(cache_key)
         if cached_data is not None:
-            print("キャッシュからリターンデータを取得しました")
+            logger.info("キャッシュからリターンデータを取得しました")
             return pd.read_json(cached_data, orient='split')
         
-        print(f"{len(symbols)}銘柄の価格データを取得中...")
+        logger.info(f"{len(symbols)}銘柄の価格データを取得中...")
         
         prices_df = pd.DataFrame()
         batch_size = 5  # APIレート制限対策
@@ -110,7 +121,7 @@ class BaseClusterer(ABC):
         # バッチ処理
         for i in range(0, len(symbols), batch_size):
             batch_symbols = symbols[i:i+batch_size]
-            print(f"バッチ取得中: {batch_symbols}")
+            logger.info(f"バッチ取得中: {batch_symbols}")
             
             try:
                 # YFinanceで価格データを取得
@@ -138,12 +149,12 @@ class BaseClusterer(ABC):
                 time.sleep(1)
             
             except Exception as e:
-                print(f"警告: バッチ{i}のデータ取得エラー: {str(e)}")
+                logger.warning(f"警告: バッチ{i}のデータ取得エラー: {str(e)}")
                 time.sleep(5)  # エラー時は長めに待機
         
         # シンボルが1つも取得できなかった場合
         if prices_df.empty:
-            print("エラー: 有効な価格データが取得できませんでした")
+            logger.error("エラー: 有効な価格データが取得できませんでした")
             return pd.DataFrame()
         
         # 欠損値処理
@@ -154,16 +165,16 @@ class BaseClusterer(ABC):
         prices_df = prices_df.loc[:, prices_df.count() >= min_data_points]
         
         if prices_df.empty:
-            print("エラー: 欠損値処理後にデータがなくなりました")
+            logger.error("エラー: 欠損値処理後にデータがなくなりました")
             return pd.DataFrame()
         
         # 日次対数リターンの計算
         log_returns_df = np.log(prices_df / prices_df.shift(1)).dropna()
         
         # キャッシュに保存
-        cache.set_json(cache_key, log_returns_df.to_json(orient='split'))
+        cache_manager.set_json(cache_key, log_returns_df.to_json(orient='split'))
         
-        print(f"リターンデータ取得完了: {log_returns_df.shape[0]}日 x {log_returns_df.shape[1]}銘柄")
+        logger.info(f"リターンデータ取得完了: {log_returns_df.shape[0]}日 x {log_returns_df.shape[1]}銘柄")
         return log_returns_df
     
     def select_representative_etfs(self, etf_clusters: List[Dict[str, Any]], 
@@ -229,7 +240,7 @@ class BaseClusterer(ABC):
                         selected_etfs.append(central_etf)
                         continue
             except Exception as e:
-                print(f"クラスタ{cluster_id}の代表ETF選択エラー: {str(e)}")
+                logger.error(f"クラスタ{cluster_id}の代表ETF選択エラー: {str(e)}")
             
             # エラーまたはデータが不十分な場合、出来高が最も多いETFを選択
             fallback_etf = max(cluster_etfs, key=lambda x: x.get('avg_volume', 0))
@@ -305,11 +316,13 @@ class BaseClusterer(ABC):
             plt.savefig(visualization_path, dpi=200, bbox_inches='tight')
             plt.close()
             
-            print(f"クラスタマップを保存しました: {visualization_path}")
+            logger.info(f"クラスタマップを保存しました: {visualization_path}")
             return visualization_path
             
         except Exception as e:
-            print(f"可視化エラー: {str(e)}")
+            logger.error(f"可視化エラー: {str(e)}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return ""
     
     def _generate_cache_key(self, etfs: List[Dict[str, Any]]) -> str:
@@ -321,5 +334,13 @@ class BaseClusterer(ABC):
         Returns:
             str: キャッシュキー
         """
+        # シンボルだけを抽出、ソートし、先頭5つだけを使用（キーが長すぎるのを防ぐため）
         symbols = sorted([etf.get('symbol', '') for etf in etfs if etf.get('symbol')])
-        return f"{self.name}_clustering_{'_'.join(symbols)[:100]}"
+        symbols_hash = '-'.join(symbols[:5]) + f"_{len(symbols)}"
+        
+        # パラメータのハッシュを追加
+        params_str = '_'.join([f"{k}={v}" for k, v in self.params.items() if k != 'results_dir'])
+        if params_str:
+            return f"{self.name}_clustering_{symbols_hash}_{params_str}"
+        else:
+            return f"{self.name}_clustering_{symbols_hash}"
