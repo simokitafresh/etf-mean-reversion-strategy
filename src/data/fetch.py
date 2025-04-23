@@ -16,15 +16,8 @@ from requests.exceptions import (
 )
 from urllib3.exceptions import MaxRetryError, NewConnectionError
 
-# キャッシュの安全なインポート
-try:
-    from .cache import DataCache
-    cache = DataCache()
-    cache_available = True
-except Exception as e:
-    print(f"警告: キャッシュ初期化に失敗しました: {str(e)}")
-    print("キャッシュなしで続行します")
-    cache_available = False
+# キャッシュマネージャーのインポート（単一のアクセスポイント）
+from .cache_manager import CacheManager
 
 # ロガーの設定
 logger = logging.getLogger(__name__)
@@ -33,6 +26,9 @@ handler = logging.StreamHandler()
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
+
+# キャッシュマネージャーのインスタンス取得
+cache_manager = CacheManager.get_instance()
 
 # リトライ設定
 MAX_RETRIES = 5
@@ -136,8 +132,7 @@ def exponential_backoff_delay(attempt: int) -> float:
     jitter = random.uniform(0, 0.1 * delay)
     return delay + jitter
 
-# ===== 新規関数: API呼び出しとエラー処理を分離 =====
-
+# API呼び出しとエラー処理を分離
 def safe_api_call(func, *args, max_retries=MAX_RETRIES, **kwargs):
     """API呼び出しを安全に実行し、一般的なエラーを処理する
     
@@ -224,8 +219,7 @@ def safe_api_call(func, *args, max_retries=MAX_RETRIES, **kwargs):
     logger.error(f"最大リトライ回数に達しました: {str(last_error)}")
     return None
 
-# ===== 新規関数: ETF情報取得のエラー処理を分離 =====
-
+# ETF情報取得のエラー処理を分離
 def fetch_etf_info(symbol):
     """ETFの情報を取得する
     
@@ -312,14 +306,11 @@ def get_base_etf_list() -> List[Dict[str, Any]]:
         ValueError: ETFリストの取得に失敗した場合
     """
     # キャッシュから取得を試みる
-    if cache_available:
-        try:
-            cached_data = cache.get_json("base_etf_list")
-            if cached_data:
-                logger.info("キャッシュからETFリストを取得しました")
-                return cached_data
-        except Exception as e:
-            logger.warning(f"キャッシュ読み込みエラー: {str(e)}")
+    cache_key = "base_etf_list"
+    cached_data = cache_manager.get_json(cache_key)
+    if cached_data:
+        logger.info("キャッシュからETFリストを取得しました")
+        return cached_data
     
     logger.info("ETFリストを取得しています...")
     
@@ -390,11 +381,7 @@ def get_base_etf_list() -> List[Dict[str, Any]]:
         logger.warning(f"ETFリストの取得が部分的に失敗しました（{len(etf_info)}/{len(base_etfs)}銘柄のみ取得）")
     
     # キャッシュに保存
-    if cache_available:
-        try:
-            cache.set_json("base_etf_list", etf_info)
-        except Exception as e:
-            logger.warning(f"キャッシュ保存エラー: {str(e)}")
+    cache_manager.set_json(cache_key, etf_info)
     
     logger.info(f"ETFリストを取得しました: {len(etf_info)}/{len(base_etfs)} 銘柄")
     return etf_info
@@ -453,14 +440,10 @@ def get_etf_data(
     cache_key = f"etf_data_{symbol}_{period}_{interval}"
     
     # キャッシュから取得を試みる
-    if cache_available:
-        try:
-            cached_data = cache.get_json(cache_key)
-            if cached_data:
-                logger.info(f"{symbol} のデータをキャッシュから取得しました")
-                return pd.read_json(cached_data, orient='split')
-        except Exception as e:
-            logger.warning(f"キャッシュ読み込みエラー: {str(e)}")
+    cached_data = cache_manager.get_json(cache_key)
+    if cached_data:
+        logger.info(f"{symbol} のデータをキャッシュから取得しました")
+        return pd.read_json(cached_data, orient='split')
     
     logger.info(f"{symbol} のデータを取得しています (期間: {period}, 間隔: {interval})...")
     
@@ -477,11 +460,7 @@ def get_etf_data(
         logger.warning(f"{symbol} のデータにNaNが多すぎます ({nan_percentage:.1f}%)。データの信頼性に問題がある可能性があります。")
     
     # キャッシュに保存
-    if cache_available:
-        try:
-            cache.set_json(cache_key, data.to_json(orient='split'))
-        except Exception as e:
-            logger.warning(f"キャッシュ保存エラー: {str(e)}")
+    cache_manager.set_json(cache_key, data.to_json(orient='split'))
     
     logger.info(f"{symbol} のデータを取得しました: {len(data)}行")
     return data
@@ -618,6 +597,22 @@ def get_multiple_etf_data(
     Returns:
         Dict[str, pd.DataFrame]: シンボルごとのデータフレーム
     """
+    # キャッシュキーの生成
+    cache_key = f"multiple_etf_data_{'-'.join(sorted(symbols[:5]))}_{len(symbols)}_{period}_{interval}"
+    
+    # キャッシュから取得を試みる
+    cached_data = cache_manager.get_json(cache_key)
+    if cached_data:
+        logger.info(f"{len(symbols)} 銘柄のデータをキャッシュから取得しました")
+        # JSON文字列から辞書への変換
+        result = {}
+        for symbol, df_json in cached_data.items():
+            try:
+                result[symbol] = pd.read_json(df_json, orient='split')
+            except Exception as e:
+                logger.warning(f"{symbol} のデータ復元に失敗しました: {str(e)}")
+        return result
+    
     logger.info(f"{len(symbols)} 銘柄のデータを取得します...")
     
     # 一時ダウンロード障害エリアを追跡
@@ -735,6 +730,17 @@ def get_multiple_etf_data(
     if failed_symbols:
         log_failed_symbols(failed_symbols)
     
+    # キャッシュに保存（辞書をJSON形式に変換）
+    if result:
+        try:
+            # 辞書のそれぞれのデータフレームをJSON文字列に変換
+            cached_dict = {}
+            for symbol, df in result.items():
+                cached_dict[symbol] = df.to_json(orient='split')
+            cache_manager.set_json(cache_key, cached_dict)
+        except Exception as e:
+            logger.warning(f"キャッシュへの保存に失敗しました: {str(e)}")
+    
     return result
 
 def retry_failed_areas(failed_areas, symbols, result, failed_symbols, success_status, period, interval):
@@ -784,6 +790,9 @@ def log_failed_symbols(failed_symbols):
     Args:
         failed_symbols: 失敗シンボルリスト
     """
+    if not failed_symbols:
+        return
+        
     logger.warning(f"{len(failed_symbols)} 銘柄の取得に失敗しました")
     # 失敗情報をファイルに記録
     log_dir = "data/logs"
