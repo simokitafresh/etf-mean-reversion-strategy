@@ -29,8 +29,8 @@ def calculate_bollinger_bands(
     upper_band = middle_band + (rolling_std * num_std)
     lower_band = middle_band - (rolling_std * num_std)
     
-    # バンド幅（ボラティリティ指標）
-    band_width = (upper_band - lower_band) / middle_band
+    # バンド幅（ボラティリティ指標）- ゼロ除算防止を追加
+    band_width = (upper_band - lower_band).div(middle_band, fill_value=0)
     
     return {
         'middle': middle_band,
