@@ -94,7 +94,7 @@ def generate_walk_forward_windows(
     # 最初のウィンドウの開始日
     current_start = start_date
     
-    # A4: 無限ループ防止のためのセーフガード
+    # 無限ループ防止のためのセーフガード
     max_iterations = 100  # 最大イテレーション数
     iteration_count = 0
     
@@ -107,14 +107,14 @@ def generate_walk_forward_windows(
         # テスト期間の終了日
         test_end_date = train_end_date + timedelta(days=int(test_years * 365.25))
         
-        # A4: 日付が範囲外にならないよう確認
+        # 日付が範囲外にならないよう確認
         if train_end_date >= end_date:
             logger.warning("トレーニング期間の終了日がデータ範囲を超えています。ウィンドウ生成を終了します。")
             break
         
         # 終了条件: テスト期間の終了日がデータ範囲を超える場合
         if test_end_date > end_date:
-            # A4: 最後のウィンドウを調整
+            # 最後のウィンドウを調整
             test_end_date = end_date
             logger.info(f"最後のウィンドウのテスト期間を調整: {train_end_date.strftime('%Y-%m-%d')} → {test_end_date.strftime('%Y-%m-%d')}")
             
@@ -133,7 +133,7 @@ def generate_walk_forward_windows(
         train_dates = [d for d in dates if current_start <= d <= train_end_date]
         test_dates = [d for d in dates if train_end_date < d <= test_end_date]
         
-        # A4: 各期間の日数が最低限あるかチェック
+        # 各期間の日数が最低限あるかチェック
         min_train_days = 30  # 最低30日のトレーニングデータ
         min_test_days = 10   # 最低10日のテストデータ
         
@@ -149,12 +149,17 @@ def generate_walk_forward_windows(
         
         # 次のウィンドウの開始日
         current_start = current_start + timedelta(days=int(step_months * 30.44))
+        
+        # 無限ループ検出: 開始日が前より進んでいない場合
+        if current_start >= end_date:
+            logger.info("開始日がデータの終了日を超えました。ウィンドウ生成を終了します。")
+            break
     
-    # A4: 無限ループ検出
+    # 無限ループ検出
     if iteration_count >= max_iterations:
         logger.error(f"最大イテレーション数 ({max_iterations}) に達しました。ウィンドウ生成に問題がある可能性があります。")
     
-    # A4: 結果の検証
+    # 結果の検証
     if not windows:
         logger.warning("有効なウィンドウが生成されませんでした。")
     else:
