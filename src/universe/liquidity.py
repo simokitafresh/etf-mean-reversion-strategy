@@ -5,11 +5,15 @@ import pandas as pd
 import numpy as np
 import os
 import warnings
-from typing import List, Dict, Any, Optional
-from ..data.cache import DataCache
+import logging
+from typing import List, Dict, Any, Optional, Union
+from src.data.cache_manager import CacheManager
 
-# キャッシュのインスタンス化
-cache = DataCache()
+# ロガーの設定
+logger = logging.getLogger(__name__)
+
+# キャッシュマネージャーのシングルトンインスタンスを取得
+cache_manager = CacheManager.get_instance()
 
 def screen_liquidity(etf_base_list: List[Dict[str, Any]], 
                      min_volume: int = 100000,
@@ -30,14 +34,14 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
     """
     # 入力チェック
     if not etf_base_list:
-        warnings.warn("流動性スクリーニングの入力が空です")
+        logger.warning("流動性スクリーニングの入力が空です")
         return []
     
     # キャッシュから取得を試みる
-    cache_key = f"liquidity_screened_etfs_{len(etf_base_list)}"
-    cached_data = cache.get_json(cache_key)
+    cache_key = f"liquidity_screened_etfs_{len(etf_base_list)}_{min_volume}_{min_aum}"
+    cached_data = cache_manager.get_json(cache_key)
     if cached_data:
-        print("キャッシュから流動性スクリーニング結果を取得しました")
+        logger.info("キャッシュから流動性スクリーニング結果を取得しました")
         return cached_data
     
     # 結果ディレクトリの確認
@@ -46,7 +50,7 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
     qualified_etfs = []
     error_etfs = []
     
-    print(f"{len(etf_base_list)}銘柄の流動性スクリーニングを開始します...")
+    logger.info(f"{len(etf_base_list)}銘柄の流動性スクリーニングを開始します...")
     
     # バッチ処理でAPI制限に対応
     batch_size = 5
@@ -55,7 +59,7 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
         symbols = [etf['symbol'] for etf in batch]
         
         try:
-            print(f"バッチ取得中: {symbols}")
+            logger.info(f"バッチ取得中: {symbols}")
             
             # 複数銘柄のデータを一度に取得
             data = yf.download(
@@ -77,7 +81,7 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
                         if symbol in data:
                             etf_data = data[symbol]
                         else:
-                            print(f"データがありません: {symbol}")
+                            logger.info(f"データがありません: {symbol}")
                             error_etfs.append({'symbol': symbol, 'error': 'データなし'})
                             continue
                     else:
@@ -85,7 +89,7 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
                     
                     # データが空かチェック
                     if etf_data.empty:
-                        print(f"空のデータ: {symbol}")
+                        logger.info(f"空のデータ: {symbol}")
                         error_etfs.append({'symbol': symbol, 'error': '空のデータ'})
                         continue
                     
@@ -94,7 +98,7 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
                     missing_columns = [col for col in required_columns if col not in etf_data.columns]
                     
                     if missing_columns:
-                        print(f"カラム不足 ({symbol}): {missing_columns}")
+                        logger.info(f"カラム不足 ({symbol}): {missing_columns}")
                         error_etfs.append({'symbol': symbol, 'error': f'カラム不足: {missing_columns}'})
                         continue
                     
@@ -103,7 +107,7 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
                     
                     # NaN値がまだある場合は処理をスキップ
                     if etf_data[required_columns].isna().any().any():
-                        print(f"欠損値が残っています: {symbol}")
+                        logger.info(f"欠損値が残っています: {symbol}")
                         error_etfs.append({'symbol': symbol, 'error': '欠損値が残っている'})
                         continue
                     
@@ -134,7 +138,7 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
                             except:
                                 aum = 0
                     except Exception as e:
-                        print(f"AUM取得エラー ({symbol}): {str(e)}")
+                        logger.info(f"AUM取得エラー ({symbol}): {str(e)}")
                         aum = 0
                     
                     # Bid-Askスプレッドの推定（直接取得できない場合）
@@ -163,7 +167,7 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
                         
                         qualified_etfs.append(qualified_etf)
                         
-                        print(f"適格: {symbol} (出来高: {avg_volume:.0f}, AUM: ${aum/1e9:.1f}B)")
+                        logger.info(f"適格: {symbol} (出来高: {avg_volume:.0f}, AUM: ${aum/1e9:.1f}B)")
                     else:
                         # 条件を満たさない理由をログ
                         reasons = []
@@ -176,17 +180,17 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
                         if age_in_years < min_age_years:
                             reasons.append(f"運用年数不足 ({age_in_years:.1f}年 < {min_age_years}年)")
                         
-                        print(f"不適格: {symbol} - {', '.join(reasons)}")
+                        logger.info(f"不適格: {symbol} - {', '.join(reasons)}")
                 
                 except Exception as e:
-                    print(f"ETF処理エラー ({symbol}): {str(e)}")
+                    logger.error(f"ETF処理エラー ({symbol}): {str(e)}")
                     error_etfs.append({'symbol': symbol, 'error': str(e)})
             
             # API制限対策
             time.sleep(1)
         
         except Exception as e:
-            print(f"バッチダウンロードエラー {symbols}: {str(e)}")
+            logger.error(f"バッチダウンロードエラー {symbols}: {str(e)}")
             for symbol in symbols:
                 error_etfs.append({'symbol': symbol, 'error': f'バッチダウンロードエラー: {str(e)}'})
             
@@ -195,25 +199,25 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
     
     # エラーの集計
     if error_etfs:
-        print(f"\n処理中にエラーが発生した銘柄: {len(error_etfs)}/{len(etf_base_list)}")
+        logger.info(f"\n処理中にエラーが発生した銘柄: {len(error_etfs)}/{len(etf_base_list)}")
         
         # エラーログをCSVとして保存
         error_df = pd.DataFrame(error_etfs)
         error_log_path = "data/results/liquidity_screening_errors.csv"
         error_df.to_csv(error_log_path, index=False)
-        print(f"エラーログを保存しました: {error_log_path}")
+        logger.info(f"エラーログを保存しました: {error_log_path}")
     
     # 結果の集計
-    print(f"\n流動性スクリーニング結果: {len(qualified_etfs)}/{len(etf_base_list)} 銘柄が適格")
+    logger.info(f"\n流動性スクリーニング結果: {len(qualified_etfs)}/{len(etf_base_list)} 銘柄が適格")
     
     # 結果をCSVとして保存
     if qualified_etfs:
         qualified_df = pd.DataFrame(qualified_etfs)
         qualified_path = "data/results/qualified_etfs.csv"
         qualified_df.to_csv(qualified_path, index=False)
-        print(f"適格ETFリストを保存しました: {qualified_path}")
+        logger.info(f"適格ETFリストを保存しました: {qualified_path}")
     
     # キャッシュに保存
-    cache.set_json(cache_key, qualified_etfs)
+    cache_manager.set_json(cache_key, qualified_etfs)
     
     return qualified_etfs
