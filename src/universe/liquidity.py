@@ -6,7 +6,7 @@ import numpy as np
 import os
 import warnings
 import logging
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Tuple
 from src.data.cache_manager import CacheManager
 
 # ロガーの設定
@@ -14,6 +14,43 @@ logger = logging.getLogger(__name__)
 
 # キャッシュマネージャーのシングルトンインスタンスを取得
 cache_manager = CacheManager.get_instance()
+
+def safe_float_conversion(value: Any, default: float = 0.0) -> float:
+    """安全に値をfloat型に変換する
+    
+    Args:
+        value: 変換する値
+        default: 変換失敗時のデフォルト値
+        
+    Returns:
+        float: 変換結果
+    """
+    if value is None:
+        return default
+    
+    try:
+        # 既にfloat型なら変換不要
+        if isinstance(value, float):
+            return value
+        # int型は単純にfloat変換
+        elif isinstance(value, int):
+            return float(value)
+        # 文字列の場合、単位表記を処理
+        elif isinstance(value, str):
+            value = value.upper().strip()
+            if 'B' in value:
+                return float(value.replace('B', '')) * 1e9
+            elif 'M' in value:
+                return float(value.replace('M', '')) * 1e6
+            elif 'K' in value:
+                return float(value.replace('K', '')) * 1e3
+            else:
+                return float(value)
+        # その他の型は単純にfloat変換を試みる
+        else:
+            return float(value)
+    except (ValueError, TypeError):
+        return default
 
 def screen_liquidity(etf_base_list: List[Dict[str, Any]], 
                      min_volume: int = 100000,
@@ -37,6 +74,12 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
         logger.warning("流動性スクリーニングの入力が空です")
         return []
     
+    # パラメータの型変換と検証
+    min_volume = int(min_volume)
+    min_aum = float(min_aum)
+    max_spread = float(max_spread)
+    min_age_years = float(min_age_years)
+    
     # キャッシュから取得を試みる
     cache_key = f"liquidity_screened_etfs_{len(etf_base_list)}_{min_volume}_{min_aum}"
     cached_data = cache_manager.get_json(cache_key)
@@ -56,7 +99,21 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
     batch_size = 5
     for i in range(0, len(etf_base_list), batch_size):
         batch = etf_base_list[i:i+batch_size]
-        symbols = [etf['symbol'] for etf in batch]
+        # シンボルの取得前に型チェック
+        symbols = []
+        for etf in batch:
+            if not isinstance(etf, dict):
+                logger.warning(f"無効なETFエントリをスキップします: {etf}")
+                continue
+            symbol = etf.get('symbol')
+            if symbol and isinstance(symbol, str):
+                symbols.append(symbol)
+            else:
+                logger.warning(f"無効なシンボル形式をスキップします: {symbol}")
+        
+        if not symbols:
+            logger.warning(f"バッチ{i // batch_size + 1}に有効なシンボルがありません")
+            continue
         
         try:
             logger.info(f"バッチ取得中: {symbols}")
@@ -71,7 +128,12 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
             )
             
             for etf in batch:
-                symbol = etf['symbol']
+                if not isinstance(etf, dict):
+                    continue
+                
+                symbol = etf.get('symbol')
+                if not symbol or not isinstance(symbol, str):
+                    continue
                 
                 try:
                     # 該当銘柄のデータを抽出
@@ -112,7 +174,7 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
                         continue
                     
                     # 平均出来高の計算
-                    avg_volume = etf_data['Volume'].mean()
+                    avg_volume = float(etf_data['Volume'].mean())
                     
                     # AUMの取得（直接取得が難しいため個別にAPIを使用）
                     try:
@@ -120,41 +182,31 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
                         ticker_info = ticker_obj.info or {}
                         
                         # AUMの取得（キー名が変わっている可能性に対応）
-                        aum = ticker_info.get('totalAssets') or ticker_info.get('fundAssets') or 0
+                        raw_aum = ticker_info.get('totalAssets') or ticker_info.get('fundAssets') or 0
+                        aum = safe_float_conversion(raw_aum, default=0.0)
                         
-                        # AUMが文字列の場合は数値に変換
-                        if isinstance(aum, str):
-                            try:
-                                # 単位を処理（例: "1.2B" → 1200000000）
-                                aum = aum.upper()
-                                if 'B' in aum:
-                                    aum = float(aum.replace('B', '')) * 1e9
-                                elif 'M' in aum:
-                                    aum = float(aum.replace('M', '')) * 1e6
-                                elif 'K' in aum:
-                                    aum = float(aum.replace('K', '')) * 1e3
-                                else:
-                                    aum = float(aum)
-                            except:
-                                aum = 0
                     except Exception as e:
                         logger.info(f"AUM取得エラー ({symbol}): {str(e)}")
-                        aum = 0
+                        aum = 0.0
                     
                     # Bid-Askスプレッドの推定（直接取得できない場合）
                     # 日中のボラティリティをプロキシとして使用
-                    volatility = (etf_data['High'] - etf_data['Low']).mean() / etf_data['Close'].mean()
-                    estimated_spread = volatility * 0.1  # 簡易推定
+                    try:
+                        volatility = float((etf_data['High'] - etf_data['Low']).mean() / etf_data['Close'].mean())
+                        estimated_spread = float(volatility * 0.1)  # 簡易推定
+                    except (ValueError, ZeroDivisionError):
+                        logger.warning(f"スプレッド計算エラー ({symbol}): ボラティリティ計算に失敗")
+                        estimated_spread = 0.01  # デフォルト値
                     
                     # データ長から運用年数を推定
-                    history_length = len(etf_data)
-                    age_in_years = history_length / 252 if history_length > 0 else 0
+                    history_length = int(len(etf_data))
+                    age_in_years = float(history_length / 252) if history_length > 0 else 0.0
                     
                     # 条件判定
-                    if (avg_volume >= min_volume and 
-                        aum >= min_aum and
-                        estimated_spread <= max_spread and
-                        age_in_years >= min_age_years):
+                    if (float(avg_volume) >= float(min_volume) and 
+                        float(aum) >= float(min_aum) and
+                        float(estimated_spread) <= float(max_spread) and
+                        float(age_in_years) >= float(min_age_years)):
                         
                         # 合格したETF情報を更新して保存
                         qualified_etf = etf.copy()  # 元のデータを変更しない
@@ -171,13 +223,13 @@ def screen_liquidity(etf_base_list: List[Dict[str, Any]],
                     else:
                         # 条件を満たさない理由をログ
                         reasons = []
-                        if avg_volume < min_volume:
+                        if float(avg_volume) < float(min_volume):
                             reasons.append(f"出来高不足 ({avg_volume:.0f} < {min_volume})")
-                        if aum < min_aum:
+                        if float(aum) < float(min_aum):
                             reasons.append(f"AUM不足 (${aum/1e9:.1f}B < ${min_aum/1e9:.1f}B)")
-                        if estimated_spread > max_spread:
+                        if float(estimated_spread) > float(max_spread):
                             reasons.append(f"スプレッド超過 ({estimated_spread:.2%} > {max_spread:.2%})")
-                        if age_in_years < min_age_years:
+                        if float(age_in_years) < float(min_age_years):
                             reasons.append(f"運用年数不足 ({age_in_years:.1f}年 < {min_age_years}年)")
                         
                         logger.info(f"不適格: {symbol} - {', '.join(reasons)}")
