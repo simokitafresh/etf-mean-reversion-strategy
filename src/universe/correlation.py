@@ -1,4 +1,3 @@
-# src/universe/correlation.py
 """相関に基づくETFフィルタリング"""
 import pandas as pd
 import numpy as np
@@ -8,19 +7,13 @@ import os
 import warnings
 import logging
 from typing import List, Dict, Any, Optional, Union, Tuple
+from src.data.cache_manager import CacheManager
 
 # ロガーの設定
 logger = logging.getLogger(__name__)
 
-# キャッシュのインスタンス化 - エラー処理強化
-try:
-    from ..data.cache import DataCache
-    cache = DataCache()
-    cache_available = True
-except Exception as e:
-    logger.warning(f"キャッシュ初期化エラー: {str(e)}")
-    logger.info("キャッシュなしで続行します")
-    cache_available = False
+# キャッシュマネージャーのシングルトンインスタンスを取得
+cache_manager = CacheManager.get_instance()
 
 def correlation_filtering(
     liquid_etfs: List[Dict[str, Any]], 
@@ -39,7 +32,7 @@ def correlation_filtering(
     Returns:
         list: フィルタリング後のETFリスト
     """
-    # B2: 入力チェックの強化
+    # 入力チェックの強化
     if not liquid_etfs:
         logger.warning("相関フィルタリングの入力が空です")
         return []
@@ -67,21 +60,17 @@ def correlation_filtering(
         logger.warning("相関フィルタリングには少なくとも2つのETFが必要です")
         return liquid_etfs
     
-    # B2: 閾値の検証
+    # 閾値の検証
     if correlation_threshold < 0 or correlation_threshold > 1:
         logger.warning(f"無効な相関閾値 ({correlation_threshold})。0.8に調整します。")
         correlation_threshold = 0.8
     
-    # キャッシュから取得を試みる - エラー処理強化
-    if cache_available:
-        cache_key = f"correlation_filtered_etfs_{len(liquid_etfs)}_{correlation_threshold}"
-        try:
-            cached_data = cache.get_json(cache_key)
-            if cached_data:
-                logger.info("キャッシュから相関フィルタリング結果を取得しました")
-                return cached_data
-        except Exception as e:
-            logger.warning(f"キャッシュ読み込みエラー: {str(e)}")
+    # キャッシュから取得を試みる
+    cache_key = f"correlation_filtered_etfs_{len(liquid_etfs)}_{correlation_threshold}"
+    cached_data = cache_manager.get_json(cache_key)
+    if cached_data:
+        logger.info("キャッシュから相関フィルタリング結果を取得しました")
+        return cached_data
     
     # 再帰深度チェック（無限ループ防止）
     if max_attempts <= 0:
@@ -132,7 +121,7 @@ def correlation_filtering(
                 time.sleep(5)  # エラー時は長めに待機
                 continue
         
-        # B2: データ処理の基本チェック強化
+        # データ処理の基本チェック強化
         if prices_df.empty:
             logger.error("価格データを取得できませんでした。元のETFリストを返します。")
             return liquid_etfs
@@ -141,22 +130,22 @@ def correlation_filtering(
             logger.error("2つ以上の有効なETFデータが必要です。元のETFリストを返します。")
             return liquid_etfs
         
-        # B2: NaNの前処理強化 - 前後データを参照する前に重複を削除
+        # NaNの前処理強化 - 前後データを参照する前に重複を削除
         prices_df = prices_df[~prices_df.index.duplicated(keep='first')]
         
-        # B2: 欠損値処理の強化 - 段階的処理で可能な限りデータを保持
+        # 欠損値処理の強化 - 段階的処理で可能な限りデータを保持
         # 1. まず前方方向に補完
         prices_df_filled = prices_df.fillna(method='ffill')
         # 2. その後、後方方向に補完
         prices_df_filled = prices_df_filled.fillna(method='bfill')
         
-        # B2: 完全に欠損しているカラムの特定
+        # 完全に欠損しているカラムの特定
         null_columns = prices_df_filled.columns[prices_df_filled.isna().all()]
         if len(null_columns) > 0:
             logger.warning(f"完全に欠損しているカラムを削除します: {list(null_columns)}")
             prices_df_filled = prices_df_filled.drop(columns=null_columns)
         
-        # B2: データ量が十分な銘柄のみ保持
+        # データ量が十分な銘柄のみ保持
         # 80%以上のデータがある銘柄のみ保持
         min_data_points = 0.8 * len(prices_df_filled)
         valid_columns = prices_df_filled.columns[prices_df_filled.count() >= min_data_points]
@@ -172,22 +161,22 @@ def correlation_filtering(
         # 日次リターンに変換
         returns_df = prices_df_filled.pct_change().dropna()
         
-        # B2: リターンデータが空でないことを確認
+        # リターンデータが空でないことを確認
         if returns_df.empty:
             logger.error("リターンデータの生成に失敗しました。元のETFリストを返します。")
             return liquid_etfs
         
-        # B2: 異常値の処理 - 極端なリターン値をクリッピング
+        # 異常値の処理 - 極端なリターン値をクリッピング
         # リターンの最大・最小範囲を制限（例：-30%〜+30%）
         returns_df = returns_df.clip(-0.3, 0.3)
         
         # 相関行列の計算（NaN値が存在する場合に備えたハンドリング）
-        # B2: 安全な相関計算
+        # 安全な相関計算
         try:
             # 全銘柄のペアワイズ相関を計算（パールソン）
             corr_matrix = calculate_robust_correlation(returns_df)
             
-            # B2: 相関行列に問題がないか確認
+            # 相関行列に問題がないか確認
             if corr_matrix is None or corr_matrix.empty:
                 logger.error("相関行列の計算に失敗しました。元のETFリストを返します。")
                 return liquid_etfs
@@ -196,7 +185,7 @@ def correlation_filtering(
             logger.error(f"相関行列計算エラー: {str(e)}")
             return liquid_etfs
         
-        # B2: NaN値チェック（相関計算に失敗した場合）
+        # NaN値チェック（相関計算に失敗した場合）
         nan_mask = corr_matrix.isna()
         has_nans = nan_mask.any().any()
         
@@ -237,7 +226,7 @@ def correlation_filtering(
             """相関が高いペアを検出して除外リストを生成"""
             exclude_set = set()
             
-            # B2: シンボル有効性チェック
+            # シンボル有効性チェック
             valid_symbols = [s for s in remaining_symbols if s in corr_matrix.index and s in corr_matrix.columns]
             if len(valid_symbols) != len(remaining_symbols):
                 logger.warning(f"{len(remaining_symbols) - len(valid_symbols)}個の無効なシンボルをスキップします")
@@ -258,7 +247,7 @@ def correlation_filtering(
                         # 相関係数の取得と閾値との比較
                         correlation = corr_matrix.loc[sym_i, sym_j]
                         
-                        # B2: 相関値の検証
+                        # 相関値の検証
                         if not is_valid_correlation(correlation):
                             continue
                         
@@ -272,7 +261,7 @@ def correlation_filtering(
                                 continue
                             
                             # 流動性（出来高×AUM）で比較
-                            # B2: 安全な流動性スコア計算
+                            # 安全な流動性スコア計算
                             liquidity_i = safe_multiply(etf_i.get('avg_volume', 0), etf_i.get('aum', 0))
                             liquidity_j = safe_multiply(etf_j.get('avg_volume', 0), etf_j.get('aum', 0))
                             
@@ -311,12 +300,8 @@ def correlation_filtering(
             new_threshold = min(0.99, correlation_threshold + 0.05)  # 上限値を0.99に制限
             return correlation_filtering(liquid_etfs, target_count, new_threshold, max_attempts - 1)
         
-        # キャッシュに保存 - エラー処理強化
-        if cache_available:
-            try:
-                cache.set_json(cache_key, filtered_etfs)
-            except Exception as e:
-                logger.warning(f"キャッシュへの保存エラー: {str(e)}")
+        # キャッシュに保存
+        cache_manager.set_json(cache_key, filtered_etfs)
         
         return filtered_etfs
         
@@ -327,7 +312,7 @@ def correlation_filtering(
         # エラー時は入力データをそのまま返す
         return liquid_etfs
 
-# B2: 追加のヘルパー関数
+# ヘルパー関数
 def is_valid_correlation(corr_value):
     """相関値が有効かどうかチェック"""
     if corr_value is None:
@@ -388,4 +373,3 @@ def calculate_robust_correlation(returns_df, method='pearson'):
     except Exception as e:
         logger.error(f"堅牢な相関計算エラー: {str(e)}")
         return None
-        
